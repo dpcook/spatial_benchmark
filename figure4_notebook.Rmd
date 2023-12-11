@@ -1,0 +1,935 @@
+---
+title: "Figure 4"
+output: html_notebook
+---
+
+```{r}
+library(Seurat)
+library(tidyverse)
+library(ggrastr)
+library(scales)
+
+options(future.globals.maxSize = 8000 * 1024^2)
+```
+
+# Load the data
+```{r}
+xen1 <- readRDS("../../output/xenium_rep1.rds")
+xen2 <- readRDS("../../output/xenium_rep2.rds")
+cosmx1 <- readRDS("../../output/cosmx_rep1.rds")
+cosmx2 <- readRDS("../../output/cosmx_rep2.rds")
+
+#snPATHO reference
+ref <- readRDS("../../output/snPATHO_processed.rds")
+```
+
+# Figure 4A - H&E of endothelial crop
+
+# Figure 4B - Endothelial crop
+## Add crop
+### Xenium
+```{r}
+df <- data.frame(
+    x = Embeddings(xen1, 'global')[,1],
+    y = Embeddings(xen1, 'global')[,2],
+    var = xen1$celltype_lineage
+)
+  
+tissue_plot <- ggplot(df, aes(x=x, y=y)) +
+  rasterize(
+    geom_point(shape=16, size=0.1, stroke=0, alpha=0.8,
+               aes(color=var)),
+   dpi = 150) +
+  theme_classic()
+
+x_range <- c(2700, 3550)
+y_range <- c(1650, 2500)
+df$fov <- "Other"
+df$fov[df$x > x_range[1] & df$x < x_range[2] &
+         df$y > y_range[1] & df$y < y_range[2]] <- "FOV"
+
+fov_xen <- ggplot(df, aes(x=x, y=y)) +
+  rasterize(
+    geom_point(shape=16, size=0.1, stroke=0, alpha=0.8,
+               color='gray40',
+               data = df %>% filter(fov != "FOV")),
+    
+   dpi = 150) +
+  rasterize(
+    geom_point(shape=16, size=0.1, stroke=0, alpha=0.8,
+               aes(color=var),
+               data = df %>% filter(fov == "FOV")),
+    
+   dpi = 150) +
+  scale_color_manual(values = cols) +
+  ggtitle("Xenium - Rep1") +
+  theme_void() +
+  theme(panel.background = element_rect(fill = "black",
+                              colour = "black",
+                              linewidth = 0.5, linetype = "solid"),
+        legend.position = "none",
+        plot.background = element_rect(fill="black"),
+        title = element_text(color='white'))
+
+#cell counts
+table(df$fov)
+```
+
+```{r}
+coords <- GetTissueCoordinates(xen1)
+xen1[["endothelial"]] <- Crop(xen1[["fov"]], 
+                               x = x_range, 
+                               y = y_range, 
+                               coords = "tissue")
+DefaultBoundary(xen1[["endothelial"]]) <- "segmentation"
+```
+
+### CosMx
+TEMPORARY: Right now, the objects don't contain segmentations. Working on fixing that. I have 1/2 objects from AtoMx. Will try to use that here
+```{r}
+### THIS WILL ALL GO
+tmp <- cosmx1
+tmp_meta <- read.csv(gzfile("~/Downloads/S0_exprMat_file.csv.gz"))
+tmp_meta$cell_ID_new <- paste0(tmp_meta$cell_ID, "_", tmp_meta$fov)
+tmp$cell_id <- tmp_meta$cell_ID_new[match(tmp$cell_id, tmp_meta$cell)]
+#cosmx1 loaded based on cosmx_processing.Rmd script
+
+
+#Put celltype IDs from tmp onto new cosmx1 object
+cosmx1$celltype_pred <- as.character(tmp$celltype_pred)[match(colnames(cosmx1), tmp$cell_id)]
+cosmx1$celltype_pred <- factor(cosmx1$celltype_pred,
+                               levels = celltype_order)
+
+cosmx1$celltype_lineage <- as.character(tmp$celltype_lineage)[match(colnames(cosmx1), tmp$cell_id)]
+cosmx1$celltype_lineage <- factor(cosmx1$celltype_lineage,
+                               levels = unique(anno$celltype_lineage))
+
+# Add tissue coordinate embedding
+coords <- GetTissueCoordinates(cosmx1)
+coords <- as.matrix(coords[,1:2])
+colnames(coords) <- c("Global_1", "Global_2")
+rownames(coords) <- colnames(cosmx1)
+cosmx1[["global"]] <- CreateDimReducObject(coords, key="Global_", assay="RNA")
+```
+
+
+```{r}
+df <- data.frame(
+    x = Embeddings(cosmx1, 'global')[,1],
+    y = Embeddings(cosmx1, 'global')[,2],
+    var = cosmx1$celltype_lineage
+)
+  
+tissue_plot <- ggplot(df, aes(x=x, y=y)) +
+  rasterize(
+    geom_point(shape=16, size=0.1, stroke=0, alpha=0.8,
+               aes(color=var)),
+   dpi = 150) +
+  theme_bw()
+
+x_range <- c(37000, 43500)
+y_range <- c(13500, 20000)
+df$fov <- "Other"
+df$fov[df$x > x_range[1] & df$x < x_range[2] &
+         df$y > y_range[1] & df$y < y_range[2]] <- "FOV"
+
+fov_cosmx <- ggplot(df, aes(x=x, y=y)) +
+  rasterize(
+    geom_point(shape=16, size=0.1, stroke=0, alpha=0.8,
+               color='gray40',
+               data = df %>% filter(fov != "FOV")),
+    
+   dpi = 150) +
+  rasterize(
+    geom_point(shape=16, size=0.1, stroke=0, alpha=0.8,
+               aes(color=var),
+               data = df %>% filter(fov == "FOV")),
+    
+   dpi = 150) +
+  scale_color_manual(values = cols) +
+  ggtitle("CosMx - Rep1") +
+  theme_void() #+
+  #theme(panel.background = element_rect(fill = "black",
+     #                         colour = "black",
+    #                          linewidth = 0.5, linetype = "solid"),
+       # legend.position = "none",
+     #   plot.background = element_rect(fill="black"),
+    #    title = element_text(color='white'))
+
+table(df$fov)
+```
+
+```{r}
+coords <- GetTissueCoordinates(cosmx1)
+cosmx1[["endothelial"]] <- Crop(cosmx1[["Global"]], 
+                               x = x_range, 
+                               y = y_range, 
+                               coords = "tissue")
+
+DefaultBoundary(cosmx1[["endothelial"]]) <- "segmentation"
+```
+
+## Plot
+```{r}
+cols <- pals::kelly(22)[c(3:7, 10:16)]
+names(cols) <- levels(xen1$celltype_lineage)
+```
+
+
+```{r}
+p1 <- ImageDimPlot(xen1, fov="endothelial",
+                   group.by='celltype_lineage',
+                   alpha=0.75,
+                   border.color="gray20",
+                   axes=F,
+                   flip_xy=F) +
+  ggtitle("Xenium (Rep1) - 2117 cells") +
+ scale_fill_manual(values=cols, drop=F, name="Cell type\nprediction") +
+  theme(legend.key = element_rect(fill = "black"),
+        legend.text = element_text(size=12, color='white'),
+        legend.title = element_text(size=14, color='white'),
+        plot.title = element_text(size=16, color='white'),
+        plot.background = element_rect(fill="black", color='black'),
+        panel.background = element_rect(fill = "black",
+                                colour = "black",
+                                linewidth = 0),
+        panel.grid.major = element_line(colour = 'transparent'),
+        title = element_text(color='white'))
+
+p2 <- ImageDimPlot(cosmx1, fov="endothelial",
+                   group.by='celltype_lineage',
+                   border.color = "gray20",
+                   axes=F,
+                   alpha=0.75,
+                   flip_xy=F) +
+  ggtitle("CosMx (Rep1) - 1881 cells") +
+  scale_fill_manual(values=cols, drop=F, name="Cell type\nprediction") +
+  theme(legend.key = element_rect(fill = "black"),
+        legend.text = element_text(size=12, color='white'),
+        legend.title = element_text(size=14, color='white'),
+        plot.title = element_text(size=16, color='white'),
+        plot.background = element_rect(fill="black", color='black'),
+        panel.background = element_rect(fill = "black",
+                                colour = "black",
+                                linewidth = 0),
+        panel.grid.major = element_line(colour = 'transparent'),
+        title = element_text(color='white'))
+
+gt1 <- ggplot_gtable(ggplot_build(p1))
+gt2 <- ggplot_gtable(ggplot_build(p2))
+
+p <- cowplot::plot_grid(gt1, gt2, align='h',
+                        ncol=2)
+cowplot::save_plot(p,
+                   filename="./endothelial_fov_segmentation.pdf",
+                   base_width=15, base_height=7.5)
+```
+
+# Figure 4C - Cell size (OMITTING FOR NOW)
+Already stored in CosMx. LoadXenium() from seurat doesn't import cell metadata, so we'll grab that here:
+
+```{r}
+xen1_cells <- read.csv(gzfile("../../data/xenium/output-XETG00067__0011318__Region_1__20230901__062806/cells.csv.gz"), row.names=1)
+
+xen2_cells <- read.csv(gzfile("../../data/xenium/output-XETG00067__0011321__Region_1__20230901__062806/cells.csv.gz"), row.names=1)
+```
+
+```{r}
+xen1$Area <- xen1_cells$cell_area[match(colnames(xen1), rownames(xen1_cells))]
+xen2$Area <- xen2_cells$cell_area[match(colnames(xen2), rownames(xen2_cells))]
+```
+
+```{r}
+df <- data.frame(
+  Area = c(xen1$Area, xen2$Area, cosmx1$Area, cosmx2$Area),
+  Sample = c(
+    rep("Xenium - Rep1", ncol(xen1)),
+    rep("Xenium - Rep2", ncol(xen2)),
+    rep("CosMx - Rep1", ncol(cosmx1)),
+    rep("CosMx - Rep2", ncol(cosmx2))
+  )
+)
+```
+
+```{r}
+p <- ggplot(df, aes(x=Sample, y=Area)) +
+  geom_boxplot(color="black", outlier.shape=16, outlier.size=0.1,
+               aes(fill=Sample)) +
+  scale_fill_manual(values=c("#14B3E6", "#14B3E6",
+                                "#59C134", "#59C134")) +
+  xlab("") + ylab("Cell area (um^2)") +
+  theme_classic()
+  theme(legend.position="none",
+        axis.text.x = element_text(size=12, angle=45, hjust=1, color="black"),
+        axis.text.y = element_text(size=10, color="black"))
+```
+
+
+# Figure 4C - Trascript mixing correlation plot
+```{r}
+markers <- presto::wilcoxauc(ref, group_by="celltype_lineage")
+```
+
+```{r}
+cols <- pals::kelly(22)[c(3:7, 10:12)]
+
+
+lineage_order <- c("Epithelial",
+                   "Fibroblast",
+                   "Muscle",
+                   "Pericyte",
+                   "Endothelial",
+                   "T/NK cell",
+                   "Macrophage",
+                   "Mast cell")
+
+names(cols) <- lineage_order
+markers$group <- factor(markers$group, levels=lineage_order)
+```
+
+
+```{r}
+getCountInfo <- function(celltype){
+  common_genes <- intersect(rownames(cosmx1), rownames(xen1))
+  common_genes <- intersect(common_genes, rownames(ref))
+  
+  #get cell IDs
+  cosmx1_cells <- colnames(cosmx1)[cosmx1$celltype_lineage==celltype]
+  cosmx2_cells <- colnames(cosmx2)[cosmx2$celltype_lineage==celltype]
+  xen1_cells <- colnames(xen1)[xen1$celltype_lineage == celltype]
+  xen2_cells <- colnames(xen2)[xen2$celltype_lineage == celltype]
+  patho_cells <- colnames(ref)[ref$celltype_lineage == celltype]
+  
+  cosmx1_mat <- cosmx1[["RNA"]]$counts[common_genes, cosmx1_cells]
+  cosmx2_mat <- cosmx2[["RNA"]]$counts[common_genes, cosmx2_cells]
+  cosmx_mat <- cbind(cosmx1_mat, cosmx2_mat)
+  
+  xen1_mat <- xen1[["Xenium"]]$counts[common_genes, xen1_cells]
+  xen2_mat <- xen2[["Xenium"]]$counts[common_genes, xen2_cells]
+  xen_mat <- cbind(xen1_mat, xen2_mat)
+  
+  patho_mat <- ref[["RNA"]]$counts[common_genes, patho_cells]
+  
+   df <- data.frame(
+    CosMx = rowMeans(cosmx_mat),
+    Xenium = rowMeans(xen_mat),
+    Patho = rowMeans(patho_mat),
+    Gene = common_genes
+  )
+  
+  return(df)
+}
+```
+
+```{r}
+plotCor <- function(query_celltype, marker_celltypes){
+  #Get counts for query cell type
+  df <- getCountInfo(query_celltype)
+  
+  ###Annotate markers of marker celltypes
+  celltype_markers <- filter(markers,
+                             group %in% marker_celltypes &
+                               feature %in% df$Gene &
+                               padj < 0.05 & logFC > 0.5 & pct_out < 30) %>%
+    select(group, feature) %>%
+    arrange(group) #so order matches lineage_order
+  df$Marker <- "Other"
+  df$Marker[match(celltype_markers$feature, df$Gene)] <- as.character(celltype_markers$group)
+  df$Marker <- factor(df$Marker, levels = c(unique(as.character(celltype_markers$group)), "Other"))
+  df <- arrange(df, desc(Marker))
+  ###
+  
+  celltype_col <- as.character(c(cols[as.character(unique(celltype_markers$group))], "lightgrey"))
+  
+  #Get axis ranges
+  min <- 10e-4
+  max <- max(df$CosMx, df$Xenium, df$Patho)
+  
+  p1 <- ggplot(df, aes(x=Patho, y = Xenium)) +
+   # geom_point(color="#14B3E6") +
+    geom_point(aes(color=Marker)) +
+    geom_abline(intercept = 0, slope = 1, linetype=2) +
+    scale_x_log10(labels = label_log(digits = 2), limits=c(min, max), oob=squish) + 
+    scale_y_log10(labels = label_log(digits = 2), limits=c(min, max), oob=squish) +
+    scale_color_manual(values=c(celltype_col, "lightgrey"),
+                       name="Cell type\nmarker") +
+    xlab("snPATHO-seq") + ylab("Xenium") + ggtitle(paste0("Mean transcript counts\n(Common genes)")) +
+    theme_bw() +
+    theme(axis.text = element_text(size=10, color="black"),
+          axis.title = element_text(size=12),
+           plot.title = element_text(size=10),legend.text = element_text(size=12))
+  
+  p2 <- ggplot(df, aes(x=Patho, y = CosMx)) +
+    #geom_point(color="#59C134") +
+    geom_point(aes(color=Marker)) +
+    geom_abline(intercept = 0, slope = 1, linetype=2) +
+    scale_x_log10(labels = label_log(digits = 2), limits=c(min, max)) + 
+    scale_y_log10(labels = label_log(digits = 2), limits=c(min, max)) +
+    scale_color_manual(values=c(celltype_col, "lightgrey"),
+                       name="Cell type\nmarker") +
+    xlab("snPATHO-seq") + ylab("CosMx") + ggtitle(paste0("Mean transcript counts\n(Common genes)")) +
+    theme_bw() +
+    theme(axis.text = element_text(size=10, color="black"),
+          axis.title = element_text(size=12),
+          plot.title = element_text(size=10),
+          legend.text = element_text(size=12))
+  
+  p <- cowplot::plot_grid(p1, p2, align='h')
+  
+  #Add title
+  title <- ggdraw() + 
+  draw_label(query_celltype, x = 0, hjust = 0) +
+  theme(
+    # add margin on the left of the drawing canvas,
+    # so title is aligned with left edge of first plot
+    plot.margin = margin(0, 0, 0, 7)
+  )
+  
+  p <- cowplot::plot_grid(title, p, ncol=1, rel_heights=c(0.1, 1))
+  
+  #Oops, slash in T/NK throws off filename
+  query_celltype <- ifelse(query_celltype == "T/NK cell", "T.NK cell", query_celltype)
+  
+  cowplot::save_plot(p,
+                     filename = paste0("./marker_contamination_", query_celltype, ".pdf"),
+                     base_width=8, base_height=3.2)
+  return(p)
+}
+```
+
+
+```{r}
+p1 <- plotCor("Muscle", c("Muscle", "Epithelial", "Macrophage", "Fibroblast"))
+p2 <- plotCor("T/NK cell", c("T/NK cell", "Epithelial", "Fibroblast", "Muscle"))
+p3 <- plotCor("Epithelial", c("Epithelial", "Fibroblast", "Muscle"))
+p4 <- plotCor("Endothelial", c("Endothelial", "Pericyte", "Muscle", "Epithelial"))
+```
+
+# Figure 4D - Trascript mixing heatmap
+We quantify the ratio of unrelated markers (top 10 by logFC in each lineage) to related markers in each cell type
+
+```{r}
+markers <- presto::wilcoxauc(ref, group_by="celltype_lineage")
+celltypes <- unique(ref$celltype_lineage)
+```
+
+### Xenium
+```{r}
+common_genes <- intersect(rownames(ref), rownames(xen1))
+markers_xen <- filter(markers, feature %in% common_genes)
+```
+
+```{r}
+getMedianRatio <- function(celltype){
+  values <- list()
+  for(i in 1:length(celltypes)){
+    offtarget_markers <- markers_xen %>%
+      filter(group == celltypes[i] & padj < 0.05 & pct_out < 30) %>%
+      top_n(10, logFC) %>%
+      pull(feature)
+    
+    values[[i]] <- c(
+        colSums(xen1[["Xenium"]]$counts[offtarget_markers,xen1$celltype_lineage == celltype]),
+        colSums(xen2[["Xenium"]]$counts[offtarget_markers,xen2$celltype_lineage == celltype])
+      )
+  }    
+  names(values) <- celltypes
+  values <- do.call("cbind", values)
+  colnames(values) <- celltypes
+  values <- colMedians(as.matrix(values))
+  values <- values / values[celltype] #the median on-target counts
+}    
+    
+```
+
+```{r}
+xen_ratios <- lapply(celltypes, getMedianRatio)
+xen_ratios <- do.call("rbind", xen_ratios)
+rownames(xen_ratios) <- celltypes
+```
+
+### CosMx
+```{r}
+common_genes <- intersect(rownames(ref), rownames(cosmx1))
+markers_cosmx <- filter(markers, feature %in% common_genes)
+```
+
+TODO: Should we account for the number of markers?--they're not *super* different
+```{r}
+getMedianRatio <- function(celltype){
+  values <- list()
+  for(i in 1:length(celltypes)){
+    offtarget_markers <- markers_cosmx %>%
+      filter(group == celltypes[i] & padj < 0.05 & pct_out < 30) %>%
+      top_n(10, logFC) %>%
+      pull(feature)
+    
+    values[[i]] <- c(
+        colSums(cosmx1[["RNA"]]$counts[offtarget_markers,cosmx1$celltype_lineage == celltype]),
+        colSums(cosmx2[["RNA"]]$counts[offtarget_markers,cosmx2$celltype_lineage == celltype])
+      )
+  }    
+  names(values) <- celltypes
+  values <- do.call("cbind", values)
+  colnames(values) <- celltypes
+  values <- colMedians(as.matrix(values))
+  values <- values / values[celltype] #the median on-target counts
+}    
+    
+```
+
+```{r}
+cosmx_ratios <- lapply(celltypes, getMedianRatio)
+cosmx_ratios <- do.call("rbind", cosmx_ratios)
+rownames(cosmx_ratios) <- celltypes
+```
+
+### Plot
+```{r}
+col_fun = colorRamp2(seq(0, 1, length.out=100), 
+                     viridis::inferno(100))
+```
+
+```{r}
+pdf("./marker_tx_ratio_xenium.pdf",  width=4.5, height=3)
+Heatmap(t(as.matrix(xen_ratios)),
+        name="Ratio",
+        col = col_fun,
+        heatmap_legend_param = list(title_gp = gpar(fontsize = 10)),
+        cluster_rows = F,
+        cluster_columns = F,
+        show_row_names = T,
+        column_names_rot = 45,
+        border = FALSE,
+        rect_gp = gpar(col = "black", lwd = 1),
+        width = ncol(xen_ratios)*unit(6, "mm"), 
+        height = nrow(xen_ratios)*unit(6, "mm"),
+        use_raster=F)
+dev.off()
+```
+
+```{r}
+pdf("./marker_tx_ratio_cosmx.pdf",  width=4.5, height=3)
+Heatmap(t(as.matrix(cosmx_ratios)),
+        name="Ratio",
+        col = col_fun,
+        heatmap_legend_param = list(title_gp = gpar(fontsize = 10)),
+        cluster_rows = F,
+        cluster_columns = F,
+        show_row_names = T,
+        column_names_rot = 45,
+        border = FALSE,
+        rect_gp = gpar(col = "black", lwd = 1),
+        width = ncol(xen_ratios)*unit(6, "mm"), 
+        height = nrow(xen_ratios)*unit(6, "mm"),
+        use_raster=F)
+dev.off()
+```
+
+
+
+# Figure 4E - FOV with single-gene markers
+```{r}
+p1 <- ImageDimPlot(xen1, fov="endothelial",
+                   group.by='celltype_lineage',
+                   alpha=0.1,
+                   border.color="gray20",
+                   axes=F,
+                   flip_xy=F,
+                   molecules = c("ACTG2", "IGF1", "PDGFRB", "PECAM1"),
+                   mols.cols = as.character(cols[c(
+                     "Muscle", 
+                     "Fibroblast",
+                     "Pericyte", 
+                     "Endothelial")]),
+                   mols.size = 0.1, nmols=Inf) +
+  ggtitle("Xenium - Single markers") +
+ scale_fill_manual(values=cols, drop=F, name="Cell type\nprediction") +
+  theme(legend.key = element_rect(fill = "black"),
+        legend.text = element_text(size=12, color='white'),
+        legend.title = element_text(size=14, color='white'),
+        plot.title = element_text(size=15, color='white'),
+        plot.background = element_rect(fill="black", color="black"),
+        panel.grid.major = element_blank(),
+        panel.background = element_rect(fill = "black",
+                                colour = "black",
+                                linewidth = 0),
+        title = element_text(color='white'))
+
+p2 <- ImageDimPlot(cosmx1, fov="endothelial",
+                   group.by='celltype_lineage',
+                   border.color = "gray20",
+                   axes=F,
+                   alpha=0.1,
+                   flip_xy=F,
+                   molecules = c("ACTG2", "IGF1", "PDGFRB", "PECAM1"),
+                   mols.cols = as.character(cols[c(
+                     "Muscle", 
+                     "Fibroblast",
+                     "Pericyte", 
+                     "Endothelial")]),
+                   mols.size = 0.1, nmols=Inf) +
+  ggtitle("CosMx - Single markers") +
+  scale_fill_manual(values=cols, drop=F, name="Cell type\nprediction") +
+  theme(legend.key = element_rect(fill = "black"),
+        legend.text = element_text(size=12, color='white'),
+        legend.title = element_text(size=14, color='white'),
+        plot.title = element_text(size=15, color='white'),
+        plot.background = element_rect(fill="black", color="black"),
+        panel.background = element_rect(fill = "black",
+                                colour = "black",
+                                linewidth = 0),
+        panel.grid.major = element_blank(),
+        title = element_text(color='white'))
+
+
+gt1 <- ggplot_gtable(ggplot_build(p1))
+gt2 <- ggplot_gtable(ggplot_build(p2))
+
+p <- cowplot::plot_grid(gt1, gt2, align='h',
+                        ncol=2)
+cowplot::save_plot(p,
+                   filename="./endothelial_fov_single_markers.pdf",
+                   base_width=12, base_height=6)
+```
+
+# Figure 4F - FOV with multiple markers
+## Get cell type markers
+```{r}
+cosmx_genes <- intersect(rownames(ref), rownames(cosmx1))
+xen_genes <- intersect(rownames(ref), rownames(xen1))
+
+markers <- presto::wilcoxauc(ref, group_by="celltype")
+
+pericyte_markers_cosmx <- markers %>%
+  filter(group == "Pericyte") %>%
+  filter(padj < 0.05 & logFC > 1 & pct_out < 20 & feature %in% cosmx_genes) %>%
+  top_n(10, logFC) %>%
+  pull(feature)
+pericyte_markers_xen <- markers %>%
+  filter(group == "Pericyte") %>%
+  filter(padj < 0.05 & logFC > 1 & pct_out < 20 & feature %in% xen_genes) %>%
+  top_n(10, logFC) %>%
+  pull(feature)
+
+endothelial_markers_cosmx <- markers %>%
+  filter(group == "Endothelial") %>%
+  filter(padj < 0.05 & logFC > 1 & pct_out < 20 & feature %in% cosmx_genes) %>%
+  top_n(10, logFC) %>%
+  pull(feature)
+endothelial_markers_xen <- markers %>%
+  filter(group == "Endothelial") %>%
+  filter(padj < 0.05 & logFC > 1 & pct_out < 20 & feature %in% xen_genes) %>%
+  top_n(10, logFC) %>%
+  pull(feature)
+```
+
+
+```{r}
+p1 <- ImageDimPlot(xen1, fov="endothelial",
+                   group.by='orig.ident',
+                   alpha=0.1,
+                   border.color="gray20",
+                   axes=F,
+                   flip_xy=F,
+                   molecules = c(pericyte_markers_xen, endothelial_markers_xen),
+                   mols.cols = as.character(
+                     c(rep(cols["Pericyte"], length(pericyte_markers_xen)),
+                                 rep(cols["Endothelial"], length(endothelial_markers_xen)))
+                   ),
+                   mols.size = 0.25, nmols=1000) +
+  ggtitle("Xenium - Multiple markers") +
+ #scale_fill_manual(values=cols, drop=F, name="Cell type\nprediction") +
+  theme(legend.key = element_rect(fill = "black"),
+        legend.text = element_text(size=12, color='white'),
+        legend.title = element_text(size=14, color='white'),
+        plot.title = element_text(size=15, color='white'),
+        plot.background = element_rect(fill="black", color="black"),
+        panel.background = element_rect(fill = "black",
+                                colour = "black",
+                                linewidth = 0),
+        panel.grid.major = element_line(colour = 'transparent'),
+        title = element_text(color='white'))
+
+p2 <- ImageDimPlot(cosmx1, fov="endothelial",
+                   group.by='orig.ident',
+                   border.color = "gray20",
+                   axes=F,
+                   alpha=0.1,
+                   flip_xy=F,
+                   molecules = c(pericyte_markers_cosmx, endothelial_markers_cosmx),
+                   mols.cols = as.character(
+                     c(rep(cols["Pericyte"], length(pericyte_markers_cosmx)),
+                                 rep(cols["Endothelial"], length(endothelial_markers_cosmx)))
+                   ),
+                   mols.size = 0.25, nmols=1000) +
+  ggtitle("CosMx - Multiple markers") +
+  #scale_fill_manual(values=cols, drop=F, name="Cell type\nprediction") +
+  theme(legend.key = element_rect(fill = "black"),
+        legend.text = element_text(size=12, color='white'),
+        legend.title = element_text(size=14, color='white'),
+        plot.title = element_text(size=15, color='white'),
+        plot.background = element_rect(fill="black", color="black"),
+        panel.background = element_rect(fill = "black",
+                                colour = "black",
+                                linewidth = 0),
+        panel.grid.major = element_line(colour = 'transparent'),
+        title = element_text(color='white'))
+
+
+gt1 <- ggplot_gtable(ggplot_build(p1))
+gt2 <- ggplot_gtable(ggplot_build(p2))
+
+p <- cowplot::plot_grid(gt1, gt2, align='h',
+                        ncol=2)
+cowplot::save_plot(p,
+                   filename="./endothelial_fov_celltype_markers.pdf",
+                   base_width=12, base_height=6)
+```
+
+# Figure 4G - UMAPs of T cell markers
+```{r}
+plotUMAP <- function(gene){
+  df_xen <- data.frame(
+    UMAP1 = Embeddings(xen1, 'umap')[,1],
+    UMAP2 = Embeddings(xen1, 'umap')[,2],
+    Expression = xen1[["Xenium"]]$counts[gene,]
+  )
+  
+  df_cosmx <- data.frame(
+    UMAP1 = Embeddings(cosmx1, 'umap')[,1],
+    UMAP2 = Embeddings(cosmx1, 'umap')[,2],
+    Expression = cosmx1[["RNA"]]$counts[gene,]
+  )
+  
+  p1 <- ggplot(df_xen, aes(x=UMAP1, y=UMAP2)) +
+    rasterize(
+      geom_point(shape=16, stroke=0, size=0.3,
+               aes(color=log1p(Expression))),
+      dpi=150) +
+    scale_color_gradientn(colours=c("lightgrey", viridis::inferno(100)[0:100]),
+                          name="Transcript\ncounts",guide = guide_colorbar(ticks.colour = "black",
+                                                   frame.colour = "black",
+                                                   barwidth=1, barheight = 4)) +
+    ggtitle(paste0("Xenium - Rep1")) +
+    theme_void() +
+    theme()
+  
+  p2 <- ggplot(df_cosmx, aes(x=UMAP1, y=UMAP2)) +
+    rasterize(
+      geom_point(shape=16, stroke=0, size=0.3,
+               aes(color=log1p(Expression))),
+      dpi=150) +
+    scale_color_gradientn(colours=c("lightgrey", viridis::inferno(100)[0:100]),
+                          name="Transcript\ncounts",
+                          guide = guide_colorbar(ticks.colour = "black",
+                                                   frame.colour = "black",
+                                                   barwidth=1, barheight = 4)) +
+    ggtitle(paste0("CosMx - Rep1")) +
+    theme_void() +
+    theme()
+  
+  p <- cowplot::plot_grid(p1, p2, ncol=2,
+                          align='h')
+
+  #Add title
+  title <- ggdraw() + 
+  draw_label(gene, x = 0, hjust = 0, size=16, colour="black") +
+  theme(
+    # add margin on the left of the drawing canvas,
+    # so title is aligned with left edge of first plot
+    plot.margin = margin(0, 0, 0, 0)
+    
+  )
+  
+  p <- cowplot::plot_grid(title, p, ncol=1, rel_heights = c(0.1,1),
+                          align='h')
+  
+  cowplot::save_plot(p, 
+                     filename=paste0("./umap_", gene, ".pdf"),
+                     base_width=6, base_height=3.2)
+  
+}
+```
+
+```{r}
+plotUMAP("CD3E")
+plotUMAP("CD3D")
+plotUMAP("CD8A")
+plotUMAP("GZMA")
+```
+
+# Figure 4G - T cell infiltration
+## Xenium 1
+First, trying to narrow in on coordinates of interest
+```{r}
+df <- data.frame(
+    x = Embeddings(xen1, 'global')[,1],
+    y = Embeddings(xen1, 'global')[,2],
+    var = xen1$celltype_lineage
+)
+  
+# Tissue plot to narrow in on region of interest
+tissue_plot <- ggplot(df, aes(x=x, y=y)) +
+  rasterize(
+    geom_point(shape=16, size=0.1, stroke=0, alpha=0.8,
+               aes(color=var)),
+   dpi = 150) +
+  theme_bw()
+
+x_range <- c(3700, 4200)
+y_range <- c(5500, 5900)
+df$fov <- "Other"
+df$fov[df$x > x_range[1] & df$x < x_range[2] &
+         df$y > y_range[1] & df$y < y_range[2]] <- "FOV"
+
+fov_xen <- ggplot(df, aes(x=x, y=y)) +
+  rasterize(
+    geom_point(shape=16, size=0.1, stroke=0, alpha=0.8,
+               color='gray40',
+               data = df %>% filter(fov != "FOV")),
+    
+   dpi = 150) +
+  rasterize(
+    geom_point(shape=16, size=0.1, stroke=0, alpha=0.8,
+               aes(color=var),
+               data = df %>% filter(fov == "FOV")),
+    
+   dpi = 150) +
+  scale_color_manual(values = cols) +
+  ggtitle("Xenium - Rep1") +
+  theme_void() +
+  theme(panel.background = element_rect(fill = "black",
+                              colour = "black",
+                              linewidth = 0.5, linetype = "solid"),
+        legend.position = "none",
+        plot.background = element_rect(fill="black"),
+        title = element_text(color='white'))
+
+#cell counts
+table(df$fov)
+```
+
+```{r}
+coords <- GetTissueCoordinates(xen1)
+xen1[["lymphocyte"]] <- Crop(xen1[["fov"]], 
+                               x = x_range, 
+                               y = y_range, 
+                               coords = "tissue")
+DefaultBoundary(xen1[["lymphocyte"]]) <- "segmentation"
+```
+
+
+### CosMx 1
+
+```{r}
+df <- data.frame(
+    x = Embeddings(cosmx1, 'global')[,1],
+    y = Embeddings(cosmx1, 'global')[,2],
+    var = cosmx1$celltype_pred
+)
+  
+tissue_plot <- ggplot(df, aes(x=x, y=y)) +
+  rasterize(
+    geom_point(shape=16, size=0.1, stroke=0, alpha=0.8,
+               aes(color=var)),
+   dpi = 150) +
+  theme_bw()
+
+x_range <- c(34000, 39000)
+y_range <- c(46000, 51000)
+df$fov <- "Other"
+df$fov[df$x > x_range[1] & df$x < x_range[2] &
+         df$y > y_range[1] & df$y < y_range[2]] <- "FOV"
+
+fov_cosmx <- ggplot(df, aes(x=x, y=y)) +
+  rasterize(
+    geom_point(shape=16, size=0.1, stroke=0, alpha=0.8,
+               color='gray40',
+               data = df %>% filter(fov != "FOV")),
+    
+   dpi = 150) +
+  rasterize(
+    geom_point(shape=16, size=0.1, stroke=0, alpha=0.8,
+               aes(color=var),
+               data = df %>% filter(fov == "FOV")),
+    
+   dpi = 150) +
+  scale_color_manual(values = cols) +
+  ggtitle("CosMx - Rep1") +
+  theme_void() +
+  theme(panel.background = element_rect(fill = "black",
+                              colour = "black",
+                              linewidth = 0.5, linetype = "solid"),
+        legend.position = "none",
+        plot.background = element_rect(fill="black"),
+        title = element_text(color='white'))
+
+table(df$fov)
+```
+
+```{r}
+coords <- GetTissueCoordinates(cosmx1)
+cosmx1[["lymphocyte"]] <- Crop(cosmx1[["Global"]], 
+                               x = x_range, 
+                               y = y_range, 
+                               coords = "tissue")
+
+DefaultBoundary(cosmx1[["lymphocyte"]]) <- "segmentation"
+```
+
+# Figure 4H - Crop w/ Lymphocyte markers
+```{r}
+p1 <- ImageDimPlot(xen1, fov="lymphocyte",
+                   group.by='orig.ident',
+                   alpha=0.1,
+                   border.color="gray40",
+                   axes=F,
+                   flip_xy=F,
+                   molecules = c("CD3E", "CD3D", "CD8A", "IL7R"),
+                   mols.cols = rep(as.character(cols["T/NK cell"]), 4),
+                   mols.size = 0.01, nmols=Inf) +
+  ggtitle("Xenium (Rep 1) - Lymphocytes") +
+  scale_fill_manual(values=cols, drop=F, name="Cell type\nprediction") +
+  theme(legend.key = element_rect(fill = "black"),
+        legend.text = element_text(size=12, color='white'),
+        legend.title = element_text(size=14, color='white'),
+        plot.title = element_text(size=15, color='white'),
+        plot.background = element_rect(fill="black", color="black"),
+        panel.background = element_rect(fill = "black",
+                                colour = "black",
+                                linewidth = 0),
+        panel.grid.major = element_line(colour = 'transparent'),
+        title = element_text(color='white'))
+
+p2 <- ImageDimPlot(cosmx1, fov="lymphocyte",
+                   group.by='orig.ident',
+                   border.color = "gray40",
+                   axes=F,
+                   alpha=0.1,
+                   flip_xy=F,
+                    molecules = c("CD3E", "CD3D", "CD8A", "IL7R"),
+                   mols.cols = rep(as.character(cols["T/NK cell"]), 4),
+                   mols.size = 0.01, nmols=Inf) +
+  ggtitle("CosMx (Rep 1) - Lymphocytes") +
+  scale_fill_manual(values=cols, drop=F, name="Cell type\nprediction") +
+  theme(legend.key = element_rect(fill = "black"),
+        legend.text = element_text(size=12, color='white'),
+        legend.title = element_text(size=14, color='white'),
+        plot.title = element_text(size=15, color='white'),
+        plot.background = element_rect(fill="black", color="black"),
+        panel.background = element_rect(fill = "black",
+                                colour = "black",
+                                linewidth = 0),
+        panel.grid.major = element_line(colour = 'transparent'),
+        title = element_text(color='white'))
+
+
+
+p <- cowplot::plot_grid(p1, p2, align='h',
+                        ncol=2)
+cowplot::save_plot(p,
+                   filename="./fov_lymphocyte_markers.pdf",
+                   base_width=9.5, base_height=4.25)
+```
+

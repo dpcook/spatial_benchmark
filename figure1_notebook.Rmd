@@ -1,0 +1,263 @@
+---
+title: "Figure 1"
+output: html_notebook
+---
+
+```{r}
+library(Seurat)
+library(tidyverse)
+library(ggrastr)
+library(scales)
+
+options(future.globals.maxSize = 8000 * 1024^2)
+```
+
+
+# Load the data
+```{r}
+xen1 <- readRDS("../../output/xenium_rep1.rds")
+xen2 <- readRDS("../../output/xenium_rep2.rds")
+cosmx1 <- readRDS("../../output/cosmx_rep1.rds")
+cosmx2 <- readRDS("../../output/cosmx_rep2.rds")
+
+#snPATHO reference
+ref <- readRDS("../../output/snPATHO_processed.rds")
+```
+
+
+# Figure 1a - Schematic
+
+
+# Figure 1b - snPATHO UMAP and marker dotplot
+```{r}
+cols <- pals::kelly(22)[c(3:7, 10:16)]
+
+celltype_order <- c("Epithelial (Luminal)",
+                    "Epithelial (Basal)",
+                    "Epithelial (Club)",
+                    "Epithelial (DPYS+)",
+                    "Fibroblast",
+                    "Smooth muscle",
+                    "Muscle (CHRNG+)",
+                    "Pericyte",
+                    "Endothelial",
+                    "T/NK cell",
+                    "Macrophage",
+                    "Mast cell")
+ref$celltype <- factor(ref$celltype, levels=celltype_order)
+```
+
+```{r}
+df <- data.frame(
+  UMAP1 = Embeddings(ref, 'umap')[,1],
+  UMAP2 = Embeddings(ref, 'umap')[,2],
+  cluster = ref$seurat_clusters,
+  celltype = ref$celltype
+)
+
+df$celltype <- factor(df$celltype, levels=celltype_order)
+
+df_celltype_summary <- df %>%
+  group_by(celltype) %>%
+  summarize(UMAP1 = mean(UMAP1),
+            UMAP2 = mean(UMAP2))
+```
+
+```{r}
+p <- ggplot(df, aes(x=UMAP1, y=UMAP2)) +
+  rasterize(
+    geom_point(shape=16, stroke=0, size=0.1, alpha=0.6,
+             aes(color=celltype)), dpi=150
+  ) +
+  geom_text(data = df_celltype_summary, aes(label=celltype),
+            color="black", size=4) +
+  ggtitle("snPATHO-seq (43,331 nuclei)") +
+  scale_color_manual(values = cols) +
+  theme_void() +
+  theme(legend.position="none")
+ggsave(p, filename="./snPATHO_umap_annotated.pdf",
+       width=5, height=4)
+```
+
+```{r}
+nrow(df)
+```
+
+# Figure 1c - Dotplot of cell type markers
+```{r}
+markers <- presto::wilcoxauc(ref, group_by="celltype")
+
+#Top 5 by logFC
+top_markers <- markers %>%
+  group_by(group) %>%
+  top_n(3, logFC)
+
+top_markers <- markers %>%
+  filter(padj < 0.05 & logFC > 2) %>%
+  group_by(group) %>%
+  top_n(-3, pct_out)
+
+top_markers$group <- factor(top_markers$group,
+                            levels = celltype_order)
+top_markers <- arrange(top_markers, group)
+```
+
+```{r}
+mat <- seurat[["RNA"]]$data[unique(top_markers$feature),]
+meta <- seurat@meta.data %>% select(celltype)
+meta <- bind_cols(meta, as.data.frame(t(mat))) %>%
+    pivot_longer(-celltype, names_to="Gene", values_to="Expression") %>%
+    group_by(celltype, Gene) %>%
+    dplyr::summarize(Avg = mean(Expression),
+              Pct = sum(Expression > 0) / length(Expression) * 100)
+  
+meta$celltype <- factor(meta$celltype, 
+                        levels=celltype_order)
+meta$Gene <- factor(meta$Gene,
+                    levels = unique(top_markers$feature))
+  
+dot_plot <- ggplot(meta, aes(x=Gene, y=celltype)) +
+    geom_point(aes(size = Pct, fill = Avg), color="black", shape=21) +
+    scale_size("% expressed", range = c(0,6), limits = c(0,100)) +
+    scale_fill_gradientn(colours = viridisLite::mako(100),
+                         limits=c(0,3),
+                         oob=squish,
+                         guide = guide_colorbar(ticks.colour = "black",
+                                                frame.colour = "black"),
+                         name = "Mean expression\n(log(CP10k+1)") +
+    ylab("") + xlab("") + ggtitle("Cell type markers") +
+    theme_bw() +
+    theme(axis.text.x = element_text(size=10, angle=45, hjust=1, color="black"),
+        axis.text.y = element_text(size=12, color="black"),
+        axis.title = element_text(size=14))
+
+ggsave(dot_plot, filename="./snPATHO_celltype_markers.pdf",
+       width=10, height=4.2)
+```
+
+# Figure 1d - In situ tissue w/ transcript counts
+```{r}
+xen1$nCount_Xenium_log10 <- log10(xen1$nCount_Xenium)
+xen2$nCount_Xenium_log10 <- log10(xen2$nCount_Xenium)
+cosmx1$nCount_RNA_log10 <- log10(cosmx1$nCount_RNA)
+cosmx2$nCount_RNA_log10 <- log10(cosmx2$nCount_RNA)
+
+plotVarDensity <- function(obj, var, title){
+  df <- data.frame(
+    x = Embeddings(obj, 'global')[,1],
+    y = Embeddings(obj, 'global')[,2],
+    var = obj@meta.data[,var]
+  )
+  
+  tissue_plot <- ggplot(df, aes(x=x, y=y)) +
+    #geom_point(shape=16, size=0.1, aes(color=celltype_lineage)) +
+    rasterize(
+      geom_point(shape=16, size=0.1, stroke=0, alpha=0.8,
+                 aes(color=var)),
+     dpi = 150) +
+    scale_color_gradientn(colors = RColorBrewer::brewer.pal(9, "BuPu"), 
+                     name="Transcript\ncount (log10)",
+                     guide = guide_colorbar(ticks.colour = "black",
+                                                 frame.colour = "black",
+                                                 barwidth=4, barheight = 1)) +
+    ggtitle("") +
+    theme_void() +
+    theme(legend.position="bottom")
+  return(tissue_plot)
+}
+
+p1 <- plotVarDensity(xen1, "nCount_Xenium_log10", "Xenium - replicate 1")
+p2 <- plotVarDensity(xen2, "nCount_Xenium_log10", "Xenium - replicate 2")
+p3 <- plotVarDensity(cosmx1, "nCount_RNA_log10", "CosMx - replicate 1")
+p4 <- plotVarDensity(cosmx2, "nCount_RNA_log10", "CosMx - replicate 2")
+
+p <- cowplot::plot_grid(p1, p2, p3, p4,
+                        ncol=4, align='vh')
+
+
+cowplot::save_plot(p, filename="./PCa_transcript_count.pdf",
+                   base_width=15, base_height=4.75)
+```
+
+# Figure 1e - Replicate correlation
+```{r}
+cosmx1_mat <- cosmx1[["RNA"]]$counts
+cosmx2_mat <- cosmx2[["RNA"]]$counts
+
+xen1_mat <- xen1[["Xenium"]]$counts
+xen2_mat <- xen2[["Xenium"]]$counts
+
+df_cosmx <- data.frame(
+  CosMx_1 = rowMeans(cosmx1_mat),
+  CosMx_2 = rowMeans(cosmx2_mat)
+)
+
+df_xen <- data.frame(
+  Xenium_1 = rowMeans(xen1_mat),
+  Xenium_2 = rowMeans(xen2_mat)
+)
+```
+
+```{r}
+p1 <- ggplot(df_xen, aes(x=Xenium_1, y = Xenium_2)) +
+ geom_point(color="#14B3E6") +
+  geom_abline(intercept = 0, slope = 1, linetype=2) +
+  scale_x_log10(labels = label_log(digits = 2), limits=c(1e-4, 10), oob=squish) + 
+  scale_y_log10(labels = label_log(digits = 2), limits=c(1e-4, 10), oob=squish) +
+  xlab("Xenium - Rep1") + ylab("Xenium - Rep2") + ggtitle(paste0("Mean transcript counts\n(All probes)")) +
+  theme_bw() +
+  theme(axis.text = element_text(size=10, color="black"),
+        axis.title = element_text(size=12),
+         plot.title = element_text(size=10),
+        legend.position="none")
+
+#Add title
+title <- ggdraw() + 
+draw_label("Xenium", x = 0, hjust = 0, size=14) +
+theme(
+  # add margin on the left of the drawing canvas,
+  # so title is aligned with left edge of first plot
+  plot.margin = margin(0, 0, 0, 7)
+)
+p1 <- cowplot::plot_grid(title, p1, ncol=1, rel_heights=c(0.1, 1))
+
+p2 <- ggplot(df_cosmx, aes(x=CosMx_1, y = CosMx_2)) +
+ geom_point(color="#59C134") +
+  geom_abline(intercept = 0, slope = 1, linetype=2) +
+  scale_x_log10(labels = label_log(digits = 2), limits=c(1e-4, 10), oob=squish) + 
+  scale_y_log10(labels = label_log(digits = 2), limits=c(1e-4, 10), oob=squish) +
+  xlab("CosMx - Rep1") + ylab("CosMx - Rep2") + ggtitle(paste0("Mean transcript counts\n(All probes)")) +
+  theme_bw() +
+  theme(axis.text = element_text(size=10, color="black"),
+        axis.title = element_text(size=12),
+         plot.title = element_text(size=10),
+        legend.position="none")
+
+#Add title
+title <- ggdraw() + 
+draw_label("CosMx", x = 0, hjust = 0, size=14) +
+theme(
+  # add margin on the left of the drawing canvas,
+  # so title is aligned with left edge of first plot
+  plot.margin = margin(0, 0, 0, 7)
+)
+p2 <- cowplot::plot_grid(title, p2, ncol=1, rel_heights=c(0.1, 1))
+
+
+p <- cowplot::plot_grid(p1, p2, ncol=1, align='v')
+
+
+cowplot::save_plot(p,
+                   filename = "./replicate_correlation.pdf",
+                   base_width=3, base_height=6.5)
+```
+
+```{r}
+cor(df_cosmx$CosMx_1, df_cosmx$CosMx_2)
+cor(df_xen$Xenium_1, df_xen$Xenium_2)
+```
+
+```{r}
+sessionInfo()
+```
+

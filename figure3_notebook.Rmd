@@ -1,0 +1,329 @@
+---
+title: "Figure 3"
+output: html_notebook
+---
+
+# Load the data
+```{r}
+library(Seurat)
+library(tidyverse)
+library(ggrastr)
+library(ggridges)
+library(scales)
+
+options(future.globals.maxSize = 8000 * 1024^2)
+```
+
+# Load the data
+```{r}
+xen1 <- readRDS("../../output/xenium_rep1.rds")
+xen2 <- readRDS("../../output/xenium_rep2.rds")
+cosmx1 <- readRDS("../../output/cosmx_rep1.rds")
+cosmx2 <- readRDS("../../output/cosmx_rep2.rds")
+
+#snPATHO reference
+ref <- readRDS("../../output/snPATHO_processed.rds")
+```
+
+# Figure 3A - Tissue with celltype
+```{r}
+cols <- pals::kelly(22)[c(3:7, 10:16)]
+
+celltype_order <- c("Epithelial (Luminal)",
+                    "Epithelial (Basal)",
+                    "Epithelial (Club)",
+                    "Epithelial (DPYS+)",
+                    "Fibroblast",
+                    "Smooth muscle",
+                    "Muscle (CHRNG+)",
+                    "Pericyte",
+                    "Endothelial",
+                    "T/NK cell",
+                    "Macrophage",
+                    "Mast cell")
+
+lineage_order <- c("Epithelial",
+                   "Fibroblast",
+                   "Muscle",
+                   "Pericyte",
+                   "Endothelial",
+                   "T/NK cell",
+                   "Macrophage",
+                   "Mast cell")
+```
+
+```{r}
+plotTissue <- function(seurat){
+  df <- data.frame(
+    x = Embeddings(seurat, 'global')[,1],
+    y = Embeddings(seurat, 'global')[,2],
+    celltype_pred = seurat$celltype_pred
+  )
+  
+  df$celltype_pred <- factor(df$celltype_pred,
+                                levels = celltype_order)
+  
+  tissue_plot <- ggplot(df, aes(x=x, y=y)) +
+    #geom_point(shape=16, size=0.1, aes(color=celltype_lineage)) +
+    rasterize(
+      geom_point(shape=16, size=0.1, stroke=0, alpha=0.8,
+                 aes(color=celltype_pred)),
+     dpi = 150) +
+    scale_color_manual(values = cols, drop=F,
+                     name="Cell type\nprediction") +
+    guides(colour = guide_legend(override.aes = list(size=3))) +
+    theme_void() + theme(plot.title = element_text(size=12),
+                         legend.text = element_text(size=10))
+  return(tissue_plot)
+}
+```
+
+```{r}
+p1 <- plotTissue(xen1) + ggtitle("Xenium - replicate 1") + theme(legend.position="none")
+p2 <- plotTissue(xen2) + ggtitle("Xenium - replicate 2") + theme(legend.position="none")
+p3 <- plotTissue(cosmx1) + ggtitle("CosMx - replicate 1") + theme(legend.position="none") 
+p4 <- plotTissue(cosmx2) + ggtitle("CosMx - replicate 2")+ theme(legend.position="none")
+```
+
+```{r}
+tissue_plots <- cowplot::plot_grid(p1, p2, p3, p4,
+                                   ncol=4, align='vh')
+
+legend <- cowplot::get_legend(plotTissue(xen1) +
+                                theme(legend.box.margin=margin(0,10,0,10)))
+tissue_plots <- cowplot::plot_grid(tissue_plots, legend, ncol=2, rel_widths=c(1, 0.1), 
+                                 align="h", axis="t")
+
+cowplot::save_plot(tissue_plots, filename="./celltype_annotation.pdf",
+                   base_width=18, base_height = 5)
+```
+
+# Figure 3B - CosMx epithelial annotation
+## Plot epi only
+```{r}
+plotTissue <- function(seurat){
+  df <- data.frame(
+    x = Embeddings(seurat, 'global')[,1],
+    y = Embeddings(seurat, 'global')[,2],
+    celltype_lineage = seurat$celltype_lineage
+  )
+  
+  df$celltype_lineage <- factor(df$celltype_lineage,
+                                levels = lineage_order)
+  df <- filter(df, celltype_lineage == "Epithelial")
+  
+  tissue_plot <- ggplot(df, aes(x=x, y=y)) +
+    rasterize(
+      geom_point(shape=16, size=0.2, stroke=0,
+                 aes(color=celltype_lineage)),
+     dpi = 150) +
+    scale_color_manual(values = c(cols[1])) +
+    theme_void() + theme(plot.title = element_text(size=12),
+                         legend.position="none")
+  return(tissue_plot)
+}
+
+```
+
+```{r}
+p1 <- plotTissue(xen1) + ggtitle("Xenium (rep 1)") 
+p2 <- plotTissue(cosmx1) + ggtitle("CosMx (rep 1)")
+epi_plots <- cowplot::plot_grid(p1, p2, ncol=1, align='v')
+```
+
+## Add epi markers
+```{r}
+df_xen <- data.frame(
+  x = Embeddings(xen1, 'global')[,1],
+  y = Embeddings(xen1, 'global')[,2],
+  var = xen1[["Xenium"]]$counts["EPCAM",]
+)
+
+df_cosmx <- data.frame(
+  x = Embeddings(cosmx1, 'global')[,1],
+  y = Embeddings(cosmx1, 'global')[,2],
+  var = cosmx1[["RNA"]]$counts["KLK3",]
+)
+
+### Xenium plot
+p1 <- ggplot(df_xen, aes(x=x, y=y)) +
+  rasterize(
+    geom_point(shape=16, size=0.1, stroke=0, alpha=0.8,
+               aes(color=var)),
+   dpi = 150) +
+  ggtitle("EPCAM") +
+  scale_color_gradientn(colors = RColorBrewer::brewer.pal(9, "BuPu"), 
+                   name="Transcript\ncount",
+                   limits=c(0,9), oob=squish,
+                   guide = guide_colorbar(ticks.colour = "black",
+                                               frame.colour = "black",
+                                               barwidth=1, barheight = 4)) +
+  theme_void() + theme(plot.title = element_text(size=12))
+
+### CosMx plot
+p2 <- ggplot(df_cosmx, aes(x=x, y=y)) +
+  rasterize(
+    geom_point(shape=16, size=0.1, stroke=0, alpha=0.8,
+               aes(color=var)),
+   dpi = 150) +
+  ggtitle("KLK3") +
+  scale_color_gradientn(colors = RColorBrewer::brewer.pal(9, "BuPu"), 
+                        name="Transcript\ncount",
+                     limits=c(0,100), oob=squish,
+                     guide = guide_colorbar(ticks.colour = "black",
+                                                 frame.colour = "black",
+                                                 barwidth=1, barheight = 4)) +
+  theme_void()  + theme(plot.title = element_text(size=12))
+
+
+exp_plots <- cowplot::plot_grid(p1, p2, ncol=1, align='v')
+```
+
+## Plot together
+```{r}
+p <- cowplot::plot_grid(epi_plots, exp_plots, ncol=2, align='h',
+                        rel_widths = c(0.85, 1))
+
+#Add title
+title <- ggdraw() + 
+draw_label("Epithelium only", x = 0, hjust = 0, size=14) +
+theme(
+  # add margin on the left of the drawing canvas,
+  # so title is aligned with left edge of first plot
+  plot.margin = margin(0, 0, 0, 0)
+)
+p <- cowplot::plot_grid(title, p, ncol=1, rel_heights=c(0.05, 1))
+
+cowplot::save_plot(p, filename="./epithelial_annotation.pdf",
+                   base_width=6.5, base_height=6)
+```
+
+# Figure 3C - Marker expression
+```{r}
+plotGene <- function(celltype, gene){
+  df <- data.frame(
+    Counts = c(
+      cosmx1[["RNA"]]$counts[gene, cosmx1$celltype_lineage == celltype],
+      cosmx2[["RNA"]]$counts[gene, cosmx2$celltype_lineage == celltype],
+      xen1[["Xenium"]]$counts[gene, xen1$celltype_lineage == celltype],
+      xen2[["Xenium"]]$counts[gene, xen2$celltype_lineage == celltype]
+    ),
+    Sample = c(
+      rep("CosMx1", sum(cosmx1$celltype_lineage == celltype)),
+      rep("CosMx2", sum(cosmx2$celltype_lineage == celltype)),
+      rep("Xenium1", sum(xen1$celltype_lineage == celltype)),
+      rep("Xenium2", sum(xen2$celltype_lineage == celltype))
+      )
+  )
+  
+  df$Sample <- factor(df$Sample, levels=c("Xenium1", "Xenium2",
+                                          "CosMx1", "CosMx2"))
+  
+  p <- ggplot(df, aes(x=Counts, y=Sample)) +
+    rasterize(
+      geom_jitter(shape=16, size=0.2, stroke=0, aes(color=Sample)),
+      dpi=150,
+    ) +
+    geom_boxplot(color='black', fill='lightgrey', alpha=0.5,
+                 width=0.5, outlier.size=0, outlier.colour = NA) +
+    scale_color_manual(values=c("#14B3E6", "#14B3E6",
+                                "#59C134", "#59C134")) +
+    xlab("Transcript counts") + ylab("") + 
+    ggtitle(paste0(celltype, " - ", gene)) +
+    theme_classic() +
+    theme(axis.text.x = element_text(size=10, color='black'),
+          axis.text.y = element_text(size=12, color="black"),
+          axis.title = element_text(size=12),
+          legend.position="none")
+  return(p)
+}
+```
+
+```{r}
+p1 <- plotGene("Epithelial", "EPCAM")
+p2 <- plotGene("Fibroblast", "PDGFRA")
+p3 <- plotGene("Muscle", "ACTG2")
+p4 <- plotGene("Endothelial", "PECAM1")
+p5 <- plotGene("T/NK cell", "CD3E")
+p6 <- plotGene("Macrophage", "CD14")
+
+p <- cowplot::plot_grid(p1, p2, p3,
+                        p4, p5, p6,
+                        ncol=2, align='vh')
+cowplot::save_plot(p, filename="./celltype_marker_expression.pdf",
+                   base_width=5.75, base_height=6)
+```
+
+# Figure 3D - Dotplot of markers
+```{r}
+common_genes <- intersect(rownames(xen1), rownames(cosmx1)) #125
+
+markers <- presto::wilcoxauc(ref, group_by="celltype")
+markers <- filter(markers, feature %in% common_genes)
+
+#Top 5 by logFC
+top_markers <- markers %>%
+  group_by(group) %>%
+  top_n(3, logFC)
+
+top_markers$group <- factor(top_markers$group,
+                            levels = celltype_order)
+top_markers <- arrange(top_markers, group)
+```
+
+```{r}
+ref$celltype_pred <- ref$celltype# just to make this function work
+
+getSummary <- function(obj, assay, title){
+  mat <- obj[[assay]]$counts[unique(top_markers$feature),]
+  meta <- obj@meta.data %>% select(celltype_pred)
+  meta <- bind_cols(meta, as.data.frame(t(mat))) %>%
+    pivot_longer(-celltype_pred, names_to="Gene", values_to="Expression") %>%
+    group_by(celltype_pred, Gene) %>%
+    dplyr::summarize(Avg = mean(Expression),
+              Pct = sum(Expression > 1) / length(Expression) * 100)
+  
+  meta$celltype_pred <- factor(meta$celltype_pred, 
+                               levels=celltype_order)
+  meta$Gene <- factor(meta$Gene,
+                      levels = unique(top_markers$feature))
+  
+  dot_plot <- ggplot(meta, aes(x=Gene, y=celltype_pred)) +
+    geom_point(aes(size = Pct, fill = Avg), color="black", shape=21) +
+    scale_size("% cells\ncount >1", range = c(0,6), limits = c(0,100)) +
+    scale_fill_gradientn(colours = viridisLite::mako(100),
+                         limits=c(0,5),
+                         #limits=c(-1, 1),
+                         oob=squish,
+                         guide = guide_colorbar(ticks.colour = "black",
+                                                frame.colour = "black"),
+                         name = "Mean counts") +
+    ylab("") + xlab("") + ggtitle(title) +
+    theme_bw() +
+    theme(axis.text.x = element_text(size=11, angle=45, hjust=1, color="black"),
+        axis.text.y = element_text(size=11, color="black"),
+        axis.title = element_text(size=14))
+  return(dot_plot)
+}
+```
+
+```{r}
+p1 <- getSummary(ref, "RNA", "snPATHO-seq reference") + theme(legend.position="none")
+p2 <- getSummary(cosmx1, "RNA", "CosMx") + theme(legend.position="none")
+p3 <- getSummary(xen1, "Xenium", "Xenium") + theme(legend.position="none")
+```
+
+```{r}
+p <- cowplot::plot_grid(p1, p2, p3, ncol=1,
+                   align='vh')
+
+#Add legend
+legend <- cowplot::get_legend(getSummary(ref, "RNA", "snPATHO-seq reference") +
+                                theme(legend.box.margin=margin(0,10,0,10)))
+p <- cowplot::plot_grid(p, legend, ncol=2, rel_widths=c(1, 0.2), 
+                                 align="h", axis="t")
+
+
+cowplot::save_plot(p, filename="./dotplot_marker_expression.pdf",
+                   base_height=9.5, base_width=10)
+```

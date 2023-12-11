@@ -1,0 +1,532 @@
+---
+title: "Figure 2 Notebook"
+output: html_notebook
+---
+
+```{r}
+library(Seurat)
+library(tidyverse)
+library(ggrastr)
+library(ggridges)
+library(scales)
+library(SpatialFeatureExperiment)
+library(SpatialExperiment)
+library(SingleCellExperiment)
+library(Voyager)
+library(BiocParallel)
+
+options(future.globals.maxSize = 8000 * 1024^2)
+```
+
+# Load the data
+```{r}
+xen1 <- readRDS("../../output/xenium_rep1.rds")
+xen2 <- readRDS("../../output/xenium_rep2.rds")
+cosmx1 <- readRDS("../../output/cosmx_rep1.rds")
+cosmx2 <- readRDS("../../output/cosmx_rep2.rds")
+
+#snPATHO reference
+ref <- readRDS("../../output/snPATHO_processed.rds")
+```
+
+# Figure 2a - QC table
+Median transcript counts
+```{r}
+median(xen1$nCount_Xenium)
+median(xen2$nCount_Xenium)
+median(cosmx1$nCount_RNA)
+median(cosmx2$nCount_RNA)
+```
+
+Transcripts per cell / gene target count
+```{r}
+median(xen1$nCount_Xenium) / nrow(xen1)
+median(xen2$nCount_Xenium) / nrow(xen2)
+median(cosmx1$nCount_RNA) / nrow(cosmx1)
+median(cosmx2$nCount_RNA) / nrow(cosmx2)
+```
+
+Common genes
+```{r}
+common_genes <- intersect(rownames(cosmx1), rownames(xen1))
+```
+
+```{r}
+median(colSums(xen1[["Xenium"]]$counts[common_genes,]))
+median(colSums(xen2[["Xenium"]]$counts[common_genes,]))
+median(colSums(cosmx1[["RNA"]]$counts[common_genes,]))
+median(colSums(cosmx2[["RNA"]]$counts[common_genes,]))
+```
+
+# Figure 2b - Tx count distribution
+## All targets
+```{r}
+df <- data.frame(
+  tx_count = c(colSums(cosmx1[["RNA"]]$counts),
+               colSums(cosmx2[["RNA"]]$counts),
+               colSums(xen1[["Xenium"]]$counts),
+               colSums(xen2[["Xenium"]]$counts)),
+  sample_id = c(rep("CosMx - rep1", ncol(cosmx1)),
+                rep("CosMx - rep2", ncol(cosmx2)),
+                rep("Xenium - rep1", ncol(xen1)),
+                rep("Xenium - rep2", ncol(xen2)))
+)
+```
+
+```{r}
+tx_plot_all <- ggplot(df, aes(x=log10(tx_count+1), y=sample_id)) +
+  geom_density_ridges(aes(fill=sample_id), alpha=0.5) +
+  coord_cartesian(clip = "off") + #prevent line clipping at top of plot
+  scale_fill_manual(values=c("#59C134", "#59C134", "#14B3E6", "#14B3E6")) +
+  ylab("") + xlab("log10(transcript count per cell + 1)") + ggtitle("All probes") +
+  theme_ridges() +
+  theme(legend.position="none",
+        plot.title = element_text(size=14, face="plain"),
+        axis.title.x = element_text(size=12))
+ggsave(tx_plot_all, filename="./tx_count_allgenes.pdf", width=4.5, height=2.25)
+```
+
+## Common genes
+```{r}
+common_genes <- intersect(rownames(cosmx1), rownames(xen1))
+
+df <- data.frame(
+  tx_count = c(colSums(cosmx1[["RNA"]]$counts[common_genes,]),
+               colSums(cosmx2[["RNA"]]$counts[common_genes,]),
+               colSums(xen1[["Xenium"]]$counts[common_genes,]),
+               colSums(xen2[["Xenium"]]$counts[common_genes,])),
+  sample_id = c(rep("CosMx - rep1", ncol(cosmx1)),
+                rep("CosMx - rep2", ncol(cosmx2)),
+                rep("Xenium - rep1", ncol(xen1)),
+                rep("Xenium - rep2", ncol(xen2)))
+)
+```
+
+```{r}
+tx_plot <- ggplot(df, aes(x=log10(tx_count+1), y=sample_id)) +
+  geom_density_ridges(aes(fill=sample_id), alpha=0.5) +
+  coord_cartesian(clip = "off") + #prevent line clipping at top of plot
+  scale_fill_manual(values=c("#59C134", "#59C134", "#14B3E6", "#14B3E6")) +
+  ylab("") + xlab("log10(transcript count per cell + 1)") + ggtitle("Probeset intersect (125 genes)") +
+  theme_ridges() +
+  theme(legend.position="none",
+        plot.title = element_text(size=14, face="plain"),
+        axis.title.x = element_text(size=12))
+ggsave(tx_plot, filename="./tx_count_intersect.pdf", width=4.5, height=2.25)
+```
+
+# Figure 2C - Average probe counts
+```{r}
+getProbeMean <- function(object, sample_id){
+  df_targets <- data.frame(
+    Probe = rownames(object),
+    Mean = rowMeans(object[["RNA"]]$counts),
+    Type = "Gene"
+  )
+  
+  df_neg <- data.frame(
+    Probe = rownames(object[["negprobes"]]),
+    Mean = rowMeans(object[["negprobes"]]$counts),
+    Type = "NegProbe"
+  )
+  
+  df <- bind_rows(df_targets, df_neg)
+  df$sample_id <- sample_id
+  
+  return(df)
+}
+
+df_cosmx1 <- getProbeMean(cosmx1, "CosMx_Rep1")
+df_cosmx2 <- getProbeMean(cosmx2, "CosMx_Rep2")
+```
+
+```{r}
+getProbeMean <- function(object, sample_id){
+  df_targets <- data.frame(
+    Probe = rownames(object),
+    Mean = rowMeans(object[["Xenium"]]$counts),
+    Type = "Gene"
+  )
+  
+  df_neg <- data.frame(
+    Probe = rownames(object[["ControlProbe"]]),
+    Mean = rowMeans(object[["ControlProbe"]]$counts),
+    Type = "NegProbe"
+  )
+  
+  df <- bind_rows(df_targets, df_neg)
+  df$sample_id <- sample_id
+  
+  return(df)
+}
+
+df_xen1 <- getProbeMean(xen1, "Xenium_Rep1")
+df_xen2 <- getProbeMean(xen2, "Xenium_Rep2")
+```
+
+```{r}
+plot_min <- min(c(df_cosmx1$Mean, df_cosmx2$Mean,
+                    df_xen1$Mean, df_xen2$Mean))
+plot_max <- max(c(df_cosmx1$Mean, df_cosmx2$Mean,
+                    df_xen1$Mean, df_xen2$Mean))
+
+plotProbeMean <- function(df, title, color){
+  p <- ggplot(df, aes(x=Mean, y = Type)) +
+    geom_jitter(size=0.25, shape=16, aes(color=Type)) +
+    geom_boxplot(width=0.5, color="black", fill="lightgrey",
+                 alpha=0.5, outlier.size=0, outlier.colour = NA) +
+    xlab("Probe mean counts") + ylab("") +
+    ggtitle(title) +
+    scale_x_log10(labels = label_log(digits = 2),
+                  limits = c(plot_min, plot_max)) +
+    scale_color_manual(values=c(color, "lightgrey")) +
+    theme_classic() +
+    theme(axis.text.y = element_text(size=12, color="black"),
+          axis.text.x = element_text(size=10, color="black"),
+          axis.title = element_text(size=12),
+          legend.position='none')
+  
+  return(p)
+}
+
+p1 <- plotProbeMean(df_xen1, "Xenium - Rep1", "#14B3E6")
+p2 <- plotProbeMean(df_xen2, "Xenium - Rep2", "#14B3E6")
+p3 <- plotProbeMean(df_cosmx1, "CosMx - Rep1", "#59C134")
+p4 <- plotProbeMean(df_cosmx2, "CosMx - Rep2", "#59C134")
+
+p <- cowplot::plot_grid(p1, p2, p3, p4, ncol=2, align='vh')
+cowplot::save_plot(p, filename="./probe_means.pdf",
+                   base_width=6.5, base_height=4)
+```
+
+# Figure 2D - Correlation with snPATHO
+```{r}
+# CosMx
+common_genes <- intersect(rownames(cosmx1), rownames(ref))
+cosmx1_mat <- cosmx1[["RNA"]]$counts[common_genes, ]
+cosmx2_mat <- cosmx2[["RNA"]]$counts[common_genes, ]
+cosmx_mat <- cbind(cosmx1_mat, cosmx2_mat)
+patho_mat <- ref[["RNA"]]$counts[common_genes, ]
+
+df_cosmx <- data.frame(
+  CosMx = rowMeans(cosmx_mat),
+  Patho = rowMeans(patho_mat),
+  Gene = common_genes
+)
+
+#Xenium
+common_genes <- intersect(rownames(xen1), rownames(ref))
+xen1_mat <- xen1[["Xenium"]]$counts[common_genes, ]
+xen2_mat <- xen2[["Xenium"]]$counts[common_genes, ]
+xen_mat <- cbind(xen1_mat, xen2_mat)
+
+patho_mat <- ref[["RNA"]]$counts[common_genes, ]
+
+df_xen <- data.frame(
+  Xenium = rowMeans(xen_mat),
+  Patho = rowMeans(patho_mat),
+  Gene = common_genes
+)
+```
+
+```{r}
+#Get axis ranges
+min <- 10e-4
+max <- max(df_cosmx$CosMx, df_xen$Xenium, df_cosmx$Patho)
+
+xen_neg_probe_signal <- mean(cbind(xen1[["ControlProbe"]]$counts, xen2[["ControlProbe"]]$counts))
+cosmx_neg_probe_signal <- mean(cbind(cosmx1[["negprobes"]]$counts, cosmx2[["negprobes"]]$counts))
+df_xen$Xen_above_neg <- ifelse(df_xen$Xenium > xen_neg_probe_signal,
+                             "Yes", "No")
+df_cosmx$CosMx_above_neg <- ifelse(df_cosmx$CosMx > cosmx_neg_probe_signal,
+                             "Yes", "No")
+
+p1 <- ggplot(df_xen, aes(x=Patho, y = Xenium)) +
+  geom_point(aes(color=Xen_above_neg), size=0.5, shape=16, alpha=0.75) +
+  geom_density2d(color='black', linewidth=0.1, alpha=0.5) +
+  geom_hline(yintercept = xen_neg_probe_signal, color="firebrick") +
+  geom_abline(intercept = 0, slope = 1, linetype=2) +
+  scale_color_manual(values=c("lightgrey", "#14B3E6")) +
+  scale_x_log10(labels = label_log(digits = 2), limits=c(min, max), oob=squish) + 
+  scale_y_log10(labels = label_log(digits = 2), limits=c(min, max), oob=squish) +
+  xlab("snPATHO-seq") + ylab("Xenium") + ggtitle(paste0("Mean transcript counts\n(All genes)")) +
+  theme_bw() +
+  theme(axis.text = element_text(size=10, color="black"),
+        axis.title = element_text(size=12),
+         plot.title = element_text(size=10),
+        legend.position="none")
+
+#Add title
+title <- ggdraw() + 
+draw_label("Xenium", x = 0, hjust = 0, size=14) +
+theme(
+  # add margin on the left of the drawing canvas,
+  # so title is aligned with left edge of first plot
+  plot.margin = margin(0, 0, 0, 7)
+)
+
+p1 <- cowplot::plot_grid(title, p1, ncol=1, rel_heights=c(0.1, 1))
+
+p2 <- ggplot(df_cosmx, aes(x=Patho, y = CosMx)) +
+  geom_point(aes(color=CosMx_above_neg), size=0.5, alpha=0.75, shape=16) +
+  geom_density2d(color='black', linewidth=0.1, alpha=0.5) +
+  geom_hline(yintercept = cosmx_neg_probe_signal, color="firebrick") +
+  geom_abline(intercept = 0, slope = 1, linetype=2) +
+  scale_color_manual(values=c("lightgrey", "#59C134")) +
+  scale_x_log10(labels = label_log(digits = 2), limits=c(min, max)) + 
+  scale_y_log10(labels = label_log(digits = 2), limits=c(min, max)) +
+  xlab("snPATHO-seq") + ylab("CosMx") + ggtitle(paste0("Mean transcript counts\n(All genes)")) +
+  theme_bw() +
+  theme(axis.text = element_text(size=10, color="black"),
+        axis.title = element_text(size=12),
+        plot.title = element_text(size=10),
+        legend.position='none')
+
+#Add title
+title <- ggdraw() + 
+draw_label("CosMx", x = 0, hjust = 0, size=14) +
+theme(
+  # add margin on the left of the drawing canvas,
+  # so title is aligned with left edge of first plot
+  plot.margin = margin(0, 0, 0, 7)
+)
+
+p2 <- cowplot::plot_grid(title, p2, ncol=1, rel_heights=c(0.1, 1))
+
+
+p <- cowplot::plot_grid(p1, p2, align='h')
+
+
+cowplot::save_plot(p,
+                   filename = "./snPATHO_correlation_all_genes.pdf",
+                   base_width=6, base_height=3)
+
+```
+
+# Figure 2E - Sensitivity ratio
+Xenium
+```{r}
+common_genes <- intersect(rownames(ref), rownames(xen1))
+
+df_xen <- data.frame(
+  Gene = common_genes,
+  Xen = rowMeans(cbind(xen1[["Xenium"]]$counts[common_genes,],
+                       xen2[["Xenium"]]$counts[common_genes,])),
+  Patho = rowMeans(ref[["RNA"]]$counts[common_genes,]),
+  Platform = "Xenium"
+)
+
+df_xen$ratio <- df_xen$Xen / df_xen$Patho
+df_xen$log2ratio <- log2(df_xen$ratio)
+```
+
+CosMx
+```{r}
+common_genes <- intersect(rownames(ref), rownames(cosmx1))
+
+df_cosmx <- data.frame(
+  Gene = common_genes,
+  CosMx = rowMeans(cbind(cosmx1[["RNA"]]$counts[common_genes,],
+                       cosmx2[["RNA"]]$counts[common_genes,])),
+  Patho = rowMeans(ref[["RNA"]]$counts[common_genes,]),
+  Platform = "CosMx"
+)
+
+df_cosmx$ratio <- df_cosmx$CosMx / df_cosmx$Patho
+df_cosmx$log2ratio <- log2(df_cosmx$ratio)
+```
+
+```{r}
+df <- bind_rows(df_xen, df_cosmx)
+df$Platform <- factor(df$Platform, levels=c("Xenium", "CosMx"))
+
+df <- df[is.finite(df$log2ratio),] #removes 7 Inf genes (3 Xen, 4 Cosmx) with no detection in Patho, but rare counts in situ
+
+p <- ggplot(df, aes(x=log2ratio, y=Platform)) +
+  geom_jitter(size=0.5, shape=16,aes(color=Platform)) +
+  geom_boxplot(width=0.5, color="black", fill="lightgrey",
+               alpha=0.5, outlier.size=0, outlier.colour = NA) +
+  geom_vline(xintercept = 0, linetype=2) +
+  scale_color_manual(values=c("#14B3E6", "#59C134")) +
+  ylab("") + xlab("log2(In situ / snPATHO)") + ggtitle("Sensitivity ratio") +
+  theme_classic() +
+    theme(axis.text.y = element_text(size=12, color="black"),
+          axis.text.x = element_text(size=10, color="black"),
+          axis.title = element_text(size=12),
+          legend.position='none')
+ggsave(p, filename="./sensitivity_ratio.pdf", width=3.75, height=2.6)
+```
+
+# Figure 2F - Spatial autocorrelation
+## Get Moran's I
+```{r}
+getMorans <- function(object, assay){
+  sce <- SingleCellExperiment(list(counts=object[[assay]]$counts),
+                            colData = object@meta.data)
+  colData(sce) <- cbind(colData(sce), Embeddings(object, 'global'))
+  spe <- toSpatialExperiment(sce, spatialCoordsNames = c("Global_1",
+                                                         "Global_2"))
+  sfe <- toSpatialFeatureExperiment(spe)
+  sfe <- sfe[, colSums(counts(sfe)) > 0]
+  rowData(sfe)$means <- rowMeans(counts(sfe))
+  rowData(sfe)$vars <- rowVars(counts(sfe))
+  sfe <- logNormCounts(sfe)
+  
+  #Nearest neighbor
+  colGraph(sfe, "knn20") <- findSpatialNeighbors(sfe, method = "knearneigh", 
+                                               dist_type = "idw", k = 20, 
+                                               style = "W")
+  #Moran's I
+  sfe <- runMoransI(sfe, colGraphName = "knn20", BPPARAM = MulticoreParam(8))
+  
+  return(as.data.frame(rowData(sfe)))
+}
+```
+
+```{r}
+cosmx1_moran <- getMorans(cosmx1, "RNA")
+cosmx1_moran$sample <- "CosMx - Rep1"
+cosmx1_moran$Gene <- rownames(cosmx1_moran)
+cosmx2_moran <- getMorans(cosmx2, "RNA")
+cosmx2_moran$Gene <- rownames(cosmx2_moran)
+cosmx2_moran$sample <- "CosMx - Rep2"
+xen1_moran <- getMorans(xen1, "Xenium")
+xen1_moran$sample <- "Xenium - Rep1"
+xen1_moran$Gene <- rownames(xen1_moran)
+xen2_moran <- getMorans(xen2, "Xenium")
+xen2_moran$sample <- "Xenium - Rep2"
+xen2_moran$Gene <- rownames(xen2_moran)
+```
+
+## Plots
+```{r}
+df <- bind_rows(cosmx1_moran, cosmx2_moran, xen1_moran, xen2_moran)
+df$Platform <- "CosMx"
+df$Platform[grep("Xenium", df$sample)] <- "Xenium"
+```
+
+Distribution of values
+```{r}
+p1 <- ggplot(df, aes(x=moran_sample01, y = sample)) +
+  geom_jitter(shape=16, size=0.5, aes(color=Platform)) +
+  geom_boxplot(width=0.5, fill='lightgrey', 
+               alpha=0.75, color="black", outlier.size=0, outlier.color = NA) +
+  ylab("") + xlab("Moran's I") + ggtitle("Spatial autocorrelation") +
+  scale_color_manual(values=c("#59C134", "#14B3E6")) +
+  theme_classic() +
+  theme(
+    legend.position="none",
+    axis.text.x = element_text(size=10, color="black"),
+    axis.text.y = element_text(size=12, color="black"),
+    axis.title = element_text(size=12)
+  )
+#ggsave(dist_plot, filename="../figs/spatial_autocorrelation.pdf",
+#       width=4, height=2.25)
+```
+
+CosMx vs. Xenium common genes
+```{r}
+common_genes <- intersect(cosmx1_moran$Gene, xen1_moran$Gene)
+df_summary <- df %>%
+  filter(Gene %in% common_genes) %>%
+  group_by(Platform, Gene) %>%
+  summarize(Moran = mean(moran_sample01)) %>%
+  pivot_wider(names_from = Platform, values_from=Moran)
+
+p2 <- ggplot(df_summary, aes(x=CosMx, y = Xenium)) +
+  geom_point(shape=21, size=2, color='black', fill='lightgrey', alpha=0.5) +
+  geom_abline(intercept = 0, slope = 1, linetype=2) +
+  ylab("Xenium") + xlab("CosMx") + 
+  ggtitle("Moran's I (Common genes)") +
+  theme_classic() +
+  theme(
+    axis.text = element_text(size=10, color="black"),
+    axis.title = element_text(size=12, color="black"))
+```
+
+```{r}
+p <- cowplot::plot_grid(p1, p2, ncol=2, align="h",
+                        rel_widths = c(1, 0.8))
+cowplot::save_plot(p, filename="./spatial_autocorrelation.pdf",
+                   base_width=7.5, base_height=3)
+```
+
+# Figure 2G - Markers on tissue
+```{r}
+plotGene <- function(gene, max_counts){
+  df_xen <- data.frame(
+    x = Embeddings(xen1, 'global')[,1],
+    y = Embeddings(xen1, 'global')[,2],
+    var = xen1[["Xenium"]]$counts[gene,]
+  )
+  
+  df_cosmx <- data.frame(
+    x = Embeddings(cosmx1, 'global')[,1],
+    y = Embeddings(cosmx1, 'global')[,2],
+    var = cosmx1[["RNA"]]$counts[gene,]
+  )
+  
+  ### Xenium plot
+  p1 <- ggplot(df_xen, aes(x=x, y=y)) +
+    rasterize(
+      geom_point(shape=16, size=0.1, stroke=0, alpha=0.8,
+                 aes(color=var)),
+     dpi = 150) +
+    ggtitle("Xenium") +
+    scale_color_gradientn(colors = RColorBrewer::brewer.pal(9, "BuPu"), 
+                     name="Transcript\ncount",
+                     limits=c(0,max_counts), oob=squish,
+                     guide = guide_colorbar(ticks.colour = "black",
+                                                 frame.colour = "black",
+                                                 barwidth=1, barheight = 4)) +
+    theme_void() + theme(plot.title = element_text(size=12))
+  
+  ### CosMx plot
+  p2 <- ggplot(df_cosmx, aes(x=x, y=y)) +
+    rasterize(
+      geom_point(shape=16, size=0.1, stroke=0, alpha=0.8,
+                 aes(color=var)),
+     dpi = 150) +
+    ggtitle("CosMx") +
+    scale_color_gradientn(colors = RColorBrewer::brewer.pal(9, "BuPu"), 
+                          name="Transcript\ncount",
+                       limits=c(0,max_counts), oob=squish,
+                       guide = guide_colorbar(ticks.colour = "black",
+                                                   frame.colour = "black",
+                                                   barwidth=1, barheight = 4)) +
+    theme_void()  + theme(plot.title = element_text(size=12))
+  
+  
+  p <- cowplot::plot_grid(p1, p2, ncol=1, align='v')
+  
+   #Add title
+  title <- ggdraw() + 
+  draw_label(gene, x = 0, hjust = 0, size=14) +
+  theme(
+    # add margin on the left of the drawing canvas,
+    # so title is aligned with left edge of first plot
+    plot.margin = margin(0, 0, 0, 0)
+  )
+  p <- cowplot::plot_grid(title, p, ncol=1, rel_heights=c(0.05, 1))
+  
+  
+  return(p)
+}
+```
+
+```{r}
+p1 <- plotGene("EPCAM", 9)
+p2 <- plotGene("KRT7", 9)
+p3 <- plotGene("MYH11", 20)
+p4 <- plotGene("PECAM1", 6)
+p5 <- plotGene("AR", 4)
+
+p <- cowplot::plot_grid(p1, p2, p3, p4,p5, ncol=5, align='h')
+
+cowplot::save_plot(p, filename="./tissue_marker_expression.pdf",
+                   base_width=20, base_height=8)
+
+```
+
+
+

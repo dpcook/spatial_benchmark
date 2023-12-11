@@ -1,0 +1,197 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(Seurat)
+library(scDblFinder)
+library(SingleCellExperiment)
+options(Seurat.object.assay.version = "v5")
+options(future.globals.maxSize = 8000 * 1024^2)
+```
+
+# Load data
+```{r}
+mat <- Read10X("../data/snPATHO/PCa_1/sample_filtered_feature_bc_matrix/")
+pca1 <- CreateSeuratObject(counts = mat,
+                           project = "PCa_1")
+
+mat <- Read10X("../data/snPATHO/PCa_2/sample_filtered_feature_bc_matrix/")
+pca2 <- CreateSeuratObject(counts = mat,
+                           project = "PCa_2")
+
+seurat <- merge(pca1, pca2)
+seurat[["RNA"]] <- JoinLayers(seurat[["RNA"]])
+```
+
+# Doublet removal
+Have looked at data without explicit doublet prediction and there are clear doublet populations. They're not overly problematic, but could be cleaned up
+
+```{r}
+sce <- SingleCellExperiment(list(counts = seurat[["RNA"]]$counts))
+sce$sample_id <- seurat$orig.ident
+sce <- scDblFinder(sce, samples = "sample_id", dbr=0.1)
+```
+
+```{r}
+seurat$doublet <- sce$scDblFinder.class
+```
+
+
+# QC
+```{r}
+seurat$percent_mt <- PercentageFeatureSet(seurat, pattern="^MT-")
+seurat$nCount_RNA_log10 <- log10(seurat$nCount_RNA)
+```
+
+```{r}
+hist(seurat$nCount_RNA_log10, breaks=100)
+hist(seurat$nFeature_RNA, breaks=100)
+```
+
+First looked at data without any filtering. Low count/feature droplets seem non-specific--perhaps debris. Have immunoglobulins and no specific markers
+
+```{r}
+seurat <- subset(seurat, nFeature_RNA > 1000 & doublet == "singlet")
+```
+
+
+# Processing
+```{r}
+seurat[["RNA"]] <- JoinLayers(seurat[["RNA"]])
+seurat <- SCTransform(seurat) %>%
+  RunPCA(verbose=F) %>%
+  RunUMAP(dims=1:30) %>%
+  FindNeighbors(dims=1:30) %>%
+  FindClusters(resolution=0.2)
+```
+
+```{r}
+DimPlot(seurat, label=T)
+```
+
+Have looked into cluster 4/15 and both seem to clearly be debris. No specific markers
+```{r}
+seurat <- subset(seurat, seurat_clusters %nin% c(4, 15))
+```
+
+```{r}
+seurat <- SCTransform(seurat) %>%
+  RunPCA(verbose=F) %>%
+  RunUMAP(dims=1:30) %>%
+  FindNeighbors(dims=1:30) %>%
+  FindClusters(resolution=0.2)
+```
+
+```{r}
+DimPlot(seurat, label=T)
+```
+
+# Load atlas
+```{r}
+ref <- readRDS("../data/snPATHO/atlas/prostate_portal_300921.RDS")
+```
+
+```{r}
+common_genes <- intersect(rownames(ref), rownames(seurat))
+ref <- CreateSeuratObject(counts = assay(ref, "soupx_counts"),
+                          meta = as.data.frame(colData(ref)))
+```
+
+```{r}
+ref <- NormalizeData(ref) %>%
+  FindVariableFeatures() %>%
+  ScaleData() %>%
+  RunPCA(verbose=F) %>%
+  RunUMAP(dims=1:30)
+```
+
+
+```{r}
+DefaultAssay(seurat) <- "RNA"
+seurat <- NormalizeData(seurat)
+
+anchors <- FindTransferAnchors(reference = ref, 
+                                query = seurat,
+                                dims = 1:30, 
+                                reference.reduction = "pca")
+predictions <- TransferData(anchorset = anchors, 
+                            refdata = ref$celltype,
+                            dims = 1:30)
+seurat$celltype_pred <- predictions$predicted.id
+```
+
+```{r}
+DimPlot(seurat, group.by='celltype_pred', label=T)
+DimPlot(seurat, label=T)
+```
+
+Add annotations
+```{r}
+anno <- data.frame(
+  cluster = 0:14,
+  celltype = c("Epithelial (Luminal)",
+               "Epithelial (Luminal)",
+               "Smooth muscle",
+               "Fibroblast",
+               "Epithelial (Basal)",
+               "Endothelial",
+               "Epithelial (Luminal)",
+               "Epithelial (Luminal)",
+               "Epithelial (Club)",
+               "Pericyte",
+               "Muscle (CHRNG+)",
+               "Macrophage",
+               "T/NK cell",
+               "Epithelial (DPYS+)",
+               "Mast cell")
+)
+seurat$celltype <- anno$celltype[match(seurat$seurat_clusters, anno$cluster)]
+```
+
+```{r}
+DimPlot(seurat, group.by='celltype', label=T)
+```
+
+## Add lower-res annotation
+```{r}
+anno <- data.frame(
+  celltype = c("Epithelial (Luminal)",
+             "Epithelial (Basal)",
+             "Epithelial (Club)",
+             "Epithelial (DPYS+)",
+             "Endothelial",
+             "Fibroblast",
+             "Smooth muscle",
+             "Muscle (CHRNG+)",
+             "Pericyte",
+             "T/NK cell",
+             "Macrophage",
+             "Mast cell"),
+  celltype_lineage = c("Epithelial", 
+                       "Epithelial", 
+                       "Epithelial", 
+                       "Epithelial",
+                       "Endothelial",
+                       "Fibroblast",
+                       "Muscle",
+                       "Muscle",
+                       "Pericyte",
+                       "T/NK cell",
+                       "Macrophage",
+                       "Mast cell")
+)
+
+seurat$celltype_lineage <- anno$celltype_lineage[match(seurat$celltype, anno$celltype)]
+```
+
+
+# Save point
+
+```{r}
+saveRDS(seurat, file="../output/snPATHO_processed.rds")
+```
+
+

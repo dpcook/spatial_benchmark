@@ -1,0 +1,803 @@
+---
+title: "Figure 5"
+output: html_notebook
+---
+
+```{r}
+library(Seurat)
+library(tidyverse)
+library(SpatialFeatureExperiment)
+library(SpatialExperiment)
+library(SingleCellExperiment)
+library(scater)
+library(Voyager)
+library(BiocParallel)
+library(ggrastr)
+library(scales)
+
+options(future.globals.maxSize = 8000 * 1024^2)
+```
+
+# Functions
+For this figure, we use the same panel styles across multiple datasets. Setting them up as functions up front
+
+## Color
+```{r}
+cols <- pals::kelly()
+cols <- cols[3:22]
+```
+
+
+## Tissue plot
+```{r}
+plotTissue <- function(seurat, celltype_meta){
+  df <- data.frame(
+    x = Embeddings(seurat, 'global')[,1],
+    y = Embeddings(seurat, 'global')[,2],
+    celltype_pred = seurat@meta.data[,celltype_meta]
+  )
+  
+  df$celltype_pred <- factor(df$celltype_pred, 
+                             levels=levels(seurat@meta.data[,celltype_meta]))
+  
+  tissue_plot <- ggplot(df, aes(x=x, y=y)) +
+    rasterize(
+      geom_point(shape=16, size=0.1, stroke=0, alpha=0.8,
+                 aes(color=celltype_pred)),
+     dpi = 150) +
+    scale_color_manual(values = cols, drop=F,
+                     name="Cell type\nprediction") +
+    guides(colour = guide_legend(override.aes = list(size=3))) +
+    theme_void() + theme(plot.title = element_text(size=14),
+                         legend.text = element_text(size=12))
+  return(tissue_plot)
+}
+```
+
+## Mean probe count
+```{r}
+getProbeMean <- function(object, sample_id, target_assay, negprobe_assay){
+  df_targets <- data.frame(
+    Probe = rownames(object),
+    Mean = rowMeans(object[[target_assay]]$counts),
+    Type = "Gene"
+  )
+  
+  df_neg <- data.frame(
+    Probe = rownames(object[[negprobe_assay]]),
+    Mean = rowMeans(object[[negprobe_assay]]$counts),
+    Type = "NegProbe"
+  )
+  
+  df <- bind_rows(df_targets, df_neg)
+  df$sample_id <- sample_id
+  
+  return(df)
+}
+```
+
+## Spatial autocorrelation
+```{r}
+getMorans <- function(object, assay){
+  sce <- SingleCellExperiment(list(counts=object[[assay]]$counts),
+                            colData = object@meta.data)
+  colData(sce) <- cbind(colData(sce), Embeddings(object, 'global'))
+  spe <- toSpatialExperiment(sce, spatialCoordsNames = c("Global_1",
+                                                         "Global_2"))
+  sfe <- toSpatialFeatureExperiment(spe)
+  sfe <- sfe[, colSums(counts(sfe)) > 0]
+  rowData(sfe)$means <- rowMeans(counts(sfe))
+  rowData(sfe)$vars <- rowVars(counts(sfe))
+  sfe <- logNormCounts(sfe)
+  
+  #Nearest neighbor
+  colGraph(sfe, "knn20") <- findSpatialNeighbors(sfe, method = "knearneigh", 
+                                               dist_type = "idw", k = 20, 
+                                               style = "W")
+  #Moran's I
+  sfe <- runMoransI(sfe, colGraphName = "knn20", BPPARAM = MulticoreParam(8))
+  
+  return(as.data.frame(rowData(sfe)))
+}
+```
+
+## Correlation with scRNA-seq ref
+```{r}
+getCorrelation <- function(obj, assay, ref, celltype,
+                           celltype_meta){
+  common_genes <- intersect(rownames(obj), rownames(ref))
+  
+  obj_cells <- obj@meta.data[,celltype_meta] == celltype
+  ref_cells <- ref@meta.data[,celltype_meta] == celltype
+  
+  mat <- obj[[assay]]$counts[common_genes,obj_cells]
+  ref_mat <- ref[["RNA"]]$counts[common_genes,ref_cells]
+  df <- data.frame(
+    InSitu = rowMeans(mat),
+    Ref = rowMeans(ref_mat),
+    Gene = common_genes
+  )
+  
+  return(df)
+}
+```
+
+```{r}
+plotCorrelation <- function(df_xen, df_cosmx){
+  #Get axis ranges
+  min <- 10e-4
+  max <- max(df_cosmx$InSitu, df_xen$InSitu, df_cosmx$Ref)
+  
+  xen_neg_probe_signal <- mean(xen[["ControlProbe"]]$counts)
+  cosmx_neg_probe_signal <- mean(cosmx[["NegPrb"]]$counts)
+  df_xen$Xen_above_neg <- ifelse(df_xen$InSitu > xen_neg_probe_signal,
+                               "Yes", "No")
+  df_xen$Xen_above_neg <- factor(df_xen$Xen_above_neg, levels=c("No", "Yes"))
+  df_cosmx$CosMx_above_neg <- ifelse(df_cosmx$InSitu > cosmx_neg_probe_signal,
+                               "Yes", "No")
+  df_cosmx$CosMx_above_neg <- factor(df_cosmx$CosMx_above_neg, levels=c("No", "Yes"))
+  
+  p1 <- ggplot(df_xen, aes(x=Ref, y = InSitu)) +
+    geom_point(aes(color=Xen_above_neg), size=0.5, shape=16, alpha=0.75) +
+    geom_density2d(color='black', linewidth=0.1, alpha=0.5) +
+    geom_hline(yintercept = xen_neg_probe_signal, color="firebrick") +
+    geom_abline(intercept = 0, slope = 1, linetype=2) +
+    scale_color_manual(values=c("lightgrey", "#14B3E6"), drop=F) +
+    scale_x_log10(labels = label_log(digits = 2), limits=c(min, max), oob=squish) + 
+    scale_y_log10(labels = label_log(digits = 2), limits=c(min, max), oob=squish) +
+    xlab("scRNA-seq") + ylab("Xenium") + ggtitle(paste0("Mean transcript counts\n(All genes)")) +
+    theme_bw() +
+    theme(axis.text = element_text(size=10, color="black"),
+          axis.title = element_text(size=12),
+           plot.title = element_text(size=10),
+          legend.position="none")
+  
+  #Add title
+  title <- ggdraw() + 
+  draw_label("Xenium", x = 0, hjust = 0, size=14) +
+  theme(
+    # add margin on the left of the drawing canvas,
+    # so title is aligned with left edge of first plot
+    plot.margin = margin(0, 0, 0, 7)
+  )
+  
+  p1 <- cowplot::plot_grid(title, p1, ncol=1, rel_heights=c(0.1, 1))
+  
+  p2 <- ggplot(df_cosmx, aes(x=Ref, y = InSitu)) +
+    geom_point(aes(color=CosMx_above_neg), size=0.5, alpha=0.75, shape=16) +
+    geom_density2d(color='black', linewidth=0.1, alpha=0.5) +
+    geom_hline(yintercept = cosmx_neg_probe_signal, color="firebrick") +
+    geom_abline(intercept = 0, slope = 1, linetype=2) +
+    scale_color_manual(values=c("lightgrey", "#59C134"), drop=F) +
+    scale_x_log10(labels = label_log(digits = 2), limits=c(min, max)) + 
+    scale_y_log10(labels = label_log(digits = 2), limits=c(min, max)) +
+    xlab("scRNA-seq") + ylab("CosMx") + ggtitle(paste0("Mean transcript counts\n(All genes)")) +
+    theme_bw() +
+    theme(axis.text = element_text(size=10, color="black"),
+          axis.title = element_text(size=12),
+          plot.title = element_text(size=10),
+          legend.position='none')
+  
+  #Add title
+  title <- ggdraw() + 
+  draw_label("CosMx", x = 0, hjust = 0, size=14) +
+  theme(
+    # add margin on the left of the drawing canvas,
+    # so title is aligned with left edge of first plot
+    plot.margin = margin(0, 0, 0, 7)
+  )
+  
+  p2 <- cowplot::plot_grid(title, p2, ncol=1, rel_heights=c(0.1, 1))
+  
+  
+  p <- cowplot::plot_grid(p1, p2,ncol=1, align='v')
+}
+```
+
+
+## Marker expression
+```{r}
+plotGene <- function(cosmx_assay, celltype, celltype_meta, gene){
+  df <- data.frame(
+    Counts = c(
+      cosmx[[cosmx_assay]]$counts[gene, cosmx@meta.data[,celltype_meta] == celltype],
+      xen[["Xenium"]]$counts[gene, xen@meta.data[,celltype_meta] == celltype]
+    ),
+    Sample = c(
+      rep("CosMx", sum(cosmx@meta.data[,celltype_meta] == celltype)),
+      rep("Xenium", sum(xen@meta.data[,celltype_meta] == celltype))
+      )
+  )
+  
+  df$Sample <- factor(df$Sample, levels=c("Xenium","CosMx"))
+  
+  p <- ggplot(df, aes(x=Counts, y=Sample)) +
+    rasterize(
+      geom_jitter(shape=16, size=0.2, stroke=0, aes(color=Sample)),
+      dpi=150,
+    ) +
+    geom_boxplot(color='black', fill='lightgrey', alpha=0.5,
+                 width=0.5, outlier.size=0, outlier.colour = NA) +
+    scale_color_manual(values=c("#14B3E6", "#59C134")) +
+    xlab("Transcript counts") + ylab("") + 
+    ggtitle(paste0(celltype, " - ", gene)) +
+    theme_classic() +
+    theme(axis.text.x = element_text(size=10, color='black'),
+          axis.text.y = element_text(size=12, color="black"),
+          axis.title = element_text(size=12),
+          legend.position="none")
+  return(p)
+}
+```
+
+
+# Figure 5A - Suzuki data
+## Load data
+```{r}
+xen <- readRDS("/Volumes/Charmander/spatial_data/Suzuki_BreastCancer_Xenium/seurat_obj.rds")
+cosmx <- readRDS("/Volumes/Charmander/spatial_data/Suzuki_BreastCancer_CosMx/seurat_obj.rds")
+```
+
+```{r}
+#Reference
+mat <- Matrix::readMM("/Volumes/Charmander/spatial_data/Wu_etal_2021_BRCA_scRNASeq/count_matrix_sparse.mtx")
+cells <- read.delim("/Volumes/Charmander/spatial_data/Wu_etal_2021_BRCA_scRNASeq/count_matrix_barcodes.tsv",
+                    sep="\t", header=F)
+features <- read.delim("/Volumes/Charmander/spatial_data/Wu_etal_2021_BRCA_scRNASeq/count_matrix_genes.tsv",
+                    sep="\t", header=F)
+colnames(mat) <- cells$V1
+rownames(mat) <- features$V1
+
+meta <- read.csv("/Volumes/Charmander/spatial_data/Wu_etal_2021_BRCA_scRNASeq/metadata.csv",
+                 row.names=1)
+
+ref <- CreateSeuratObject(counts = as(mat, "dgCMatrix"),
+                          meta = meta,
+                          min.cells=20,
+                          min.features=200)
+ref$celltype_pred <- ref$celltype_major
+```
+
+
+## Tissue plot
+```{r}
+p1 <- plotTissue(xen, "celltype_pred") + 
+  ggtitle("Xenium - Breast cancer") + 
+  theme(legend.position="none")
+p2 <- plotTissue(cosmx, "celltype_pred") + 
+  ggtitle("CosMx - Breast cancer") + 
+  theme(legend.position="none")
+
+p <- cowplot::plot_grid(p1, p2, ncol=1,
+                   align='vh')
+
+#Add legend
+legend <- cowplot::get_legend( plotTissue(cosmx, "celltype_pred") +
+                                theme(legend.box.margin=margin(0,10,0,10)))
+p <- cowplot::plot_grid(p, legend, ncol=2, rel_widths=c(1, 0.65), 
+                                 align="h", axis="t")
+
+
+cowplot::save_plot(p, filename="./breast_tissue_plot.pdf",
+                   base_height=6.5, base_width=4.5)
+```
+
+## Average probe count
+```{r}
+cosmx[["NegPrb"]] <- CreateAssayObject(counts = cosmx[["Nanostring"]]$counts[1001:1010,])
+#Remove NegProbes from main assay
+cosmx[["Nanostring"]] <- CreateAssayObject(counts = cosmx[["Nanostring"]]$counts[1:1000,])
+
+df_xen <- getProbeMean(xen, "Xenium", "Xenium", "ControlProbe")
+df_cosmx <- getProbeMean(cosmx, "CosMx", "Nanostring", "NegPrb")
+```
+
+```{r}
+plot_min <- min(c(df_cosmx$Mean, df_xen$Mean))
+plot_max <- max(c(df_cosmx$Mean, df_xen$Mean))
+
+plotProbeMean <- function(df, title, color){
+  df$Type = factor(df$Type, levels=c("NegProbe", "Gene"))
+  
+  p <- ggplot(df, aes(x=Type, y = Mean)) +
+    geom_jitter(size=0.25, shape=16, aes(color=Type)) +
+    geom_boxplot(width=0.5, color="black", fill="lightgrey",
+                 alpha=0.5, outlier.size=0, outlier.colour = NA) +
+    ylab("Mean counts") + xlab("") +
+    ggtitle(title) +
+    scale_y_log10(labels = label_log(digits = 2),
+                  limits = c(plot_min, plot_max)) +
+    scale_color_manual(values=c("lightgrey",color)) +
+    theme_classic() +
+    theme(axis.text.y = element_text(size=10, color="black"),
+          axis.text.x = element_text(size=12, color="black",
+                                     angle=45, hjust=1),
+          axis.title = element_text(size=12),
+          legend.position='none')
+  
+  return(p)
+}
+
+p1 <- plotProbeMean(df_xen, "Xenium", "#14B3E6")
+p2 <- plotProbeMean(df_cosmx, "CosMx", "#59C134")
+
+p <- cowplot::plot_grid(p1, p2,  ncol=1, align='v')
+cowplot::save_plot(p, filename="./breast_probe_means.pdf",
+                   base_width=1.6, base_height=5)
+```
+
+## Spatial autocorrelation
+```{r}
+xen_moran <- getMorans(xen, "Xenium")
+xen_moran$sample <- "Xenium"
+xen_moran$Gene <- rownames(xen_moran)
+
+cosmx_moran <- getMorans(cosmx, "Nanostring")
+cosmx_moran$Gene <- rownames(cosmx_moran)
+cosmx_moran$sample <- "CosMx"
+```
+
+```{r}
+df <- bind_rows(cosmx_moran, xen_moran)
+df$Platform <- "CosMx"
+df$Platform[grep("Xenium", df$sample)] <- "Xenium"
+```
+
+Distribution of values
+```{r}
+p1 <- ggplot(df, aes(x=moran_sample01, y = sample)) +
+  geom_jitter(shape=16, size=0.5, aes(color=Platform)) +
+  geom_boxplot(width=0.5, fill='lightgrey', 
+               alpha=0.75, color="black", outlier.size=0, outlier.color = NA) +
+  ylab("") + xlab("Moran's I") + ggtitle("Spatial autocorrelation") +
+  scale_color_manual(values=c("#59C134", "#14B3E6")) +
+  theme_classic() +
+  theme(
+    legend.position="none",
+    axis.text.x = element_text(size=10, color="black"),
+    axis.text.y = element_text(size=12, color="black"),
+    axis.title = element_text(size=12)
+  )
+```
+
+```{r}
+common_genes <- intersect(cosmx_moran$Gene, xen_moran$Gene)
+df_summary <- df %>%
+  filter(Gene %in% common_genes) %>%
+  group_by(Platform, Gene) %>%
+  summarize(Moran = mean(moran_sample01)) %>%
+  pivot_wider(names_from = Platform, values_from=Moran)
+
+p2 <- ggplot(df_summary, aes(x=CosMx, y = Xenium)) +
+  geom_point(shape=21, size=2, color='black', fill='lightgrey', alpha=0.5) +
+  geom_abline(intercept = 0, slope = 1, linetype=2) +
+  ylab("Xenium") + xlab("CosMx") + 
+  ggtitle("Moran's I (Common genes)") +
+  theme_classic() +
+  theme(
+    axis.text = element_text(size=10, color="black"),
+    axis.title = element_text(size=12, color="black"))
+```
+
+```{r}
+p <- cowplot::plot_grid(p1, p2, ncol = 1,
+                        align='v', rel_heights = c(0.7, 1))
+
+cowplot::save_plot(p, base_height=5, base_width = 3.25,
+                   filename="./breast_spatial_autocorrelation.pdf")
+```
+
+## Correlation with reference
+```{r}
+df_xen <- getCorrelation(xen, "Xenium", ref, "Cancer Epithelial", "celltype_pred")
+df_cosmx <- getCorrelation(cosmx, "Nanostring", ref, "Cancer Epithelial", "celltype_pred")
+```
+
+```{r}
+p <- plotCorrelation(df_xen, df_cosmx)
+cowplot::save_plot(p, filename="./breast_scRNAseq_correlation_epithelial.pdf",
+                   base_width=2.6, base_height=5)
+```
+
+## Marker expression
+```{r}
+p1 <- plotGene("Nanostring", "Cancer Epithelial", "celltype_pred", "EPCAM") + ggtitle("Epithelial - EPCAM")
+p2 <- plotGene("Nanostring", "CAFs", "celltype_pred", "ACTA2")
+p3 <- plotGene("Nanostring", "Myeloid", "celltype_pred", "CD14")
+p4 <- plotGene("Nanostring", "T-cells", "celltype_pred", "CD3E")
+p5 <- plotGene("Nanostring", "Endothelial", "celltype_pred", "PECAM1")
+p6 <- plotGene("Nanostring", "Cancer Epithelial", "celltype_pred", "KRT8") + ggtitle("Epithelial - KRT8")
+```
+
+```{r}
+p <- cowplot::plot_grid(p1, p2, p3, p4, p5, p6, ncol=2, align='vh')
+cowplot::save_plot(p, filename='./breast_celltype_markers.pdf',
+                   base_width=5.75, base_height=5)
+```
+
+# Figure 5B - Human colon
+## Load data
+```{r}
+xen <- readRDS("/Volumes/Charmander/spatial_data/Colon_Xenium/seurat_obj.rds")
+cosmx <- readRDS("/Volumes/Charmander/spatial_data/Colon_CosMx/seurat_obj.rds")
+ref <- readRDS("~/Projects/iflc_consensus/output/atlas_data/human/seurat_object.rds")
+
+# Add lineage-level annotation in reference:
+anno <- data.frame(
+  celltype = c("Crypt base epithelial",
+               "Colonocyte",
+               "BEST4+ epithelial",
+               "Paneth cell",
+               "Tuft cell",
+               "Goblet cell",
+               "Enteroendocrine cell",
+               "Trophocyte",
+               "Interstitial stromal",
+               "Telocyte",
+               "Smooth muscle",
+               "Pericyte",
+               "Neural",
+               "Endothelial",
+               "Lymphatic endothelial",
+               "Macrophage/monocyte",
+               "Mast",
+               "T/NK cell",
+               "IgA plasma",
+               "B cell"),
+  celltype_lineage = c(
+    "Epithelial",
+    "Epithelial",
+    "Epithelial",
+    "Epithelial",
+    "Epithelial",
+    "Epithelial",
+    "Epithelial",
+    "Fibroblast",
+    "Fibroblast",
+    "Fibroblast",
+    "Muscle",
+    "Pericyte",
+    "Neural",
+    "Endothelial",
+    "Lymphatic endothelial",
+    "Macrophage",
+    "Mast",
+    "T/NK cell",
+    "Plasma cell",
+    "B cell"
+  )
+)
+
+ref$celltype_level2[ref$celltype_level2 == "Enterocyte"] <- "Colonocyte"
+ref$celltype_lineage <- anno$celltype_lineage[match(ref$celltype_level2, anno$celltype)]
+```
+
+
+## Tissue plot
+```{r}
+p1 <- plotTissue(xen, "celltype_lineage") + 
+  ggtitle("Xenium - Colon") + 
+  theme(legend.position="none")
+p2 <- plotTissue(cosmx, "celltype_lineage") + 
+  ggtitle("CosMx - Colon") + 
+  theme(legend.position="none")
+
+p <- cowplot::plot_grid(p1, p2, ncol=1,
+                   align='vh')
+
+#Add legend
+legend <- cowplot::get_legend( plotTissue(cosmx, "celltype_lineage") +
+                                theme(legend.box.margin=margin(0,10,0,10)))
+p <- cowplot::plot_grid(p, legend, ncol=2, rel_widths=c(1, 0.5), 
+                                 align="h", axis="t")
+
+
+cowplot::save_plot(p, filename="./colon_tissue_plot.pdf",
+                   base_height=6.5, base_width=4.5)
+```
+
+## Average probe count
+```{r}
+df_xen <- getProbeMean(xen, "Xenium", "Xenium", "ControlProbe")
+df_cosmx <- getProbeMean(cosmx, "CosMx", "RNA", "NegPrb")
+```
+
+```{r}
+plot_min <- min(c(df_cosmx$Mean, df_xen$Mean))
+plot_max <- max(c(df_cosmx$Mean, df_xen$Mean))
+
+plotProbeMean <- function(df, title, color){
+  df$Type = factor(df$Type, levels=c("NegProbe", "Gene"))
+  
+  p <- ggplot(df, aes(x=Type, y = Mean)) +
+    geom_jitter(size=0.25, shape=16, aes(color=Type)) +
+    geom_boxplot(width=0.5, color="black", fill="lightgrey",
+                 alpha=0.5, outlier.size=0, outlier.colour = NA) +
+    ylab("Mean counts") + xlab("") +
+    ggtitle(title) +
+    scale_y_log10(labels = label_log(digits = 2),
+                  limits = c(plot_min, plot_max)) +
+    scale_color_manual(values=c("lightgrey",color)) +
+    theme_classic() +
+    theme(axis.text.y = element_text(size=10, color="black"),
+          axis.text.x = element_text(size=12, color="black",
+                                     angle=45, hjust=1),
+          axis.title = element_text(size=12),
+          legend.position='none')
+  
+  return(p)
+}
+
+p1 <- plotProbeMean(df_xen, "Xenium", "#14B3E6")
+p2 <- plotProbeMean(df_cosmx, "CosMx", "#59C134")
+
+p <- cowplot::plot_grid(p1, p2,  ncol=1, align='v')
+cowplot::save_plot(p, filename="./colon_probe_means.pdf",
+                   base_width=1.6, base_height=5)
+```
+
+## Spatial autocorrelation
+```{r}
+xen_moran <- getMorans(xen, "Xenium")
+xen_moran$sample <- "Xenium"
+xen_moran$Gene <- rownames(xen_moran)
+
+cosmx_moran <- getMorans(cosmx, "RNA")
+cosmx_moran$Gene <- rownames(cosmx_moran)
+cosmx_moran$sample <- "CosMx"
+```
+
+```{r}
+df <- bind_rows(cosmx_moran, xen_moran)
+df$Platform <- "CosMx"
+df$Platform[grep("Xenium", df$sample)] <- "Xenium"
+```
+
+Distribution of values
+```{r}
+p1 <- ggplot(df, aes(x=moran_sample01, y = sample)) +
+  geom_jitter(shape=16, size=0.5, aes(color=Platform)) +
+  geom_boxplot(width=0.5, fill='lightgrey', 
+               alpha=0.75, color="black", outlier.size=0, outlier.color = NA) +
+  ylab("") + xlab("Moran's I") + ggtitle("Spatial autocorrelation") +
+  scale_color_manual(values=c("#59C134", "#14B3E6")) +
+  theme_classic() +
+  theme(
+    legend.position="none",
+    axis.text.x = element_text(size=10, color="black"),
+    axis.text.y = element_text(size=12, color="black"),
+    axis.title = element_text(size=12)
+  )
+#ggsave(dist_plot, filename="../figs/spatial_autocorrelation.pdf",
+#       width=4, height=2.25)
+```
+
+```{r}
+common_genes <- intersect(cosmx_moran$Gene, xen_moran$Gene)
+df_summary <- df %>%
+  filter(Gene %in% common_genes) %>%
+  group_by(Platform, Gene) %>%
+  summarize(Moran = mean(moran_sample01)) %>%
+  pivot_wider(names_from = Platform, values_from=Moran)
+
+p2 <- ggplot(df_summary, aes(x=CosMx, y = Xenium)) +
+  geom_point(shape=21, size=2, color='black', fill='lightgrey', alpha=0.5) +
+  geom_abline(intercept = 0, slope = 1, linetype=2) +
+  ylab("Xenium") + xlab("CosMx") + 
+  ggtitle("Moran's I (Common genes)") +
+  theme_classic() +
+  theme(
+    axis.text = element_text(size=10, color="black"),
+    axis.title = element_text(size=12, color="black"))
+```
+
+```{r}
+p <- cowplot::plot_grid(p1, p2, ncol = 1,
+                        align='v', rel_heights = c(0.7, 1))
+
+cowplot::save_plot(p, base_height=5, base_width = 3.25,
+                   filename="./colon_spatial_autocorrelation.pdf")
+```
+
+## Correlation with reference
+```{r}
+df_xen <- getCorrelation(xen, "Xenium", ref, "Endothelial", "celltype_lineage")
+df_cosmx <- getCorrelation(cosmx, "RNA", ref, "Endothelial", "celltype_lineage")
+```
+
+```{r}
+p <- plotCorrelation(df_xen, df_cosmx)
+cowplot::save_plot(p, filename="./colon_scRNAseq_correlation_endothelial.pdf",
+                   base_width=2.6, base_height=5)
+```
+
+## Marker expression
+```{r}
+p1 <- plotGene("RNA", "Epithelial", "celltype_lineage", "EPCAM")
+p2 <- plotGene("RNA", "Fibroblast", "celltype_lineage", "PDGFRA")
+p3 <- plotGene("RNA", "Macrophage", "celltype_lineage", "CD14")
+p4 <- plotGene("RNA", "Muscle", "celltype_lineage", "ACTA2")
+p5 <- plotGene("RNA", "Endothelial", "celltype_lineage", "VWF")
+p6 <- plotGene("RNA", "Pericyte", "celltype_lineage", "NOTCH3")
+```
+
+```{r}
+p <- cowplot::plot_grid(p1, p2, p3, p4, p5, p6, ncol=2, align='vh')
+cowplot::save_plot(p, filename='./colon_celltype_markers.pdf',
+                   base_width=5.75, base_height=5)
+```
+
+
+# Figure 5C - Lung cancer
+```{r}
+xen <- readRDS("/Volumes/Charmander/spatial_data/LungCancer_Xenium/seurat_obj.rds")
+cosmx <- readRDS("/Volumes/Charmander/spatial_data/LungCancer_CosMx/seurat_obj.rds")
+
+ref <- readRDS("~/Projects/emt_programs/output/tumour_annotations/lung_kim_seurat.rds")
+ref <- subset(ref, CellType %nin% c("Platelets", "Unknown"))
+ref$celltype_pred <- ref$CellType
+```
+
+## Tissue plot
+```{r}
+p1 <- plotTissue(xen, "celltype_pred") + 
+  ggtitle("Xenium - Lung cancer") + 
+  theme(legend.position="none")
+p2 <- plotTissue(cosmx, "celltype_pred") + 
+  ggtitle("CosMx - Lung cancer") + 
+  theme(legend.position="none")
+
+p <- cowplot::plot_grid(p1, p2, ncol=1,
+                   align='vh')
+
+#Add legend
+legend <- cowplot::get_legend( plotTissue(cosmx, "celltype_pred") +
+                                theme(legend.box.margin=margin(0,10,0,10)))
+p <- cowplot::plot_grid(p, legend, ncol=2, rel_widths=c(1, 0.65), 
+                                 align="h", axis="t")
+
+
+cowplot::save_plot(p, filename="./lung_tissue_plot.pdf",
+                   base_height=6.5, base_width=4.5)
+```
+
+## Average probe count
+```{r}
+cosmx[["NegPrb"]] <- CreateAssayObject(counts = cosmx[["Nanostring"]]$counts[961:980,])
+#Remove NegProbes from main assay
+cosmx[["Nanostring"]] <- CreateAssayObject(counts = cosmx[["Nanostring"]]$counts[1:960,])
+
+df_xen <- getProbeMean(xen, "Xenium", "Xenium", "ControlProbe")
+df_cosmx <- getProbeMean(cosmx, "CosMx", "Nanostring", "NegPrb")
+```
+
+```{r}
+plot_min <- min(c(df_cosmx$Mean, df_xen$Mean))
+plot_max <- max(c(df_cosmx$Mean, df_xen$Mean))
+
+plotProbeMean <- function(df, title, color){
+  df$Type = factor(df$Type, levels=c("NegProbe", "Gene"))
+  
+  p <- ggplot(df, aes(x=Type, y = Mean)) +
+    geom_jitter(size=0.25, shape=16, aes(color=Type)) +
+    geom_boxplot(width=0.5, color="black", fill="lightgrey",
+                 alpha=0.5, outlier.size=0, outlier.colour = NA) +
+    ylab("Mean counts") + xlab("") +
+    ggtitle(title) +
+    scale_y_log10(labels = label_log(digits = 2),
+                  limits = c(plot_min, plot_max)) +
+    scale_color_manual(values=c("lightgrey",color)) +
+    theme_classic() +
+    theme(axis.text.y = element_text(size=10, color="black"),
+          axis.text.x = element_text(size=12, color="black",
+                                     angle=45, hjust=1),
+          axis.title = element_text(size=12),
+          legend.position='none')
+  
+  return(p)
+}
+
+p1 <- plotProbeMean(df_xen, "Xenium", "#14B3E6")
+p2 <- plotProbeMean(df_cosmx, "CosMx", "#59C134")
+
+p <- cowplot::plot_grid(p1, p2,  ncol=1, align='v')
+cowplot::save_plot(p, filename="./lung_probe_means.pdf",
+                   base_width=1.6, base_height=5)
+```
+
+## Spatial autocorrelation
+```{r}
+xen_moran <- getMorans(xen, "Xenium")
+xen_moran$sample <- "Xenium"
+xen_moran$Gene <- rownames(xen_moran)
+
+cosmx_moran <- getMorans(cosmx, "Nanostring")
+cosmx_moran$Gene <- rownames(cosmx_moran)
+cosmx_moran$sample <- "CosMx"
+```
+
+```{r}
+df <- bind_rows(cosmx_moran, xen_moran)
+df$Platform <- "CosMx"
+df$Platform[grep("Xenium", df$sample)] <- "Xenium"
+```
+
+Distribution of values
+```{r}
+p1 <- ggplot(df, aes(x=moran_sample01, y = sample)) +
+  geom_jitter(shape=16, size=0.5, aes(color=Platform)) +
+  geom_boxplot(width=0.5, fill='lightgrey', 
+               alpha=0.75, color="black", outlier.size=0, outlier.color = NA) +
+  ylab("") + xlab("Moran's I") + ggtitle("Spatial autocorrelation") +
+  scale_color_manual(values=c("#59C134", "#14B3E6")) +
+  theme_classic() +
+  theme(
+    legend.position="none",
+    axis.text.x = element_text(size=10, color="black"),
+    axis.text.y = element_text(size=12, color="black"),
+    axis.title = element_text(size=12)
+  )
+```
+
+```{r}
+common_genes <- intersect(cosmx_moran$Gene, xen_moran$Gene)
+df_summary <- df %>%
+  filter(Gene %in% common_genes) %>%
+  group_by(Platform, Gene) %>%
+  summarize(Moran = mean(moran_sample01)) %>%
+  pivot_wider(names_from = Platform, values_from=Moran)
+
+p2 <- ggplot(df_summary, aes(x=CosMx, y = Xenium)) +
+  geom_point(shape=21, size=2, color='black', fill='lightgrey', alpha=0.5) +
+  geom_abline(intercept = 0, slope = 1, linetype=2) +
+  ylab("Xenium") + xlab("CosMx") + 
+  ggtitle("Moran's I (Common genes)") +
+  theme_classic() +
+  theme(
+    axis.text = element_text(size=10, color="black"),
+    axis.title = element_text(size=12, color="black"))
+```
+
+```{r}
+p <- cowplot::plot_grid(p1, p2, ncol = 1,
+                        align='v', rel_heights = c(0.7, 1))
+
+cowplot::save_plot(p, base_height=5, base_width = 3.25,
+                   filename="./lung_spatial_autocorrelation.pdf")
+```
+
+
+## Correlation with reference
+```{r}
+df_xen <- getCorrelation(xen, "Xenium", ref, "Fibroblasts", "celltype_pred")
+df_cosmx <- getCorrelation(cosmx, "Nanostring", ref, "Fibroblasts", "celltype_pred")
+```
+
+```{r}
+p <- plotCorrelation(df_xen, df_cosmx)
+cowplot::save_plot(p, filename="./lung_scRNAseq_correlation_fibroblast.pdf",
+                   base_width=2.6, base_height=5)
+```
+
+## Marker Expression
+```{r}
+p1 <- plotGene("Nanostring", "Epithelial_cells", "celltype_pred", "GDF15") + ggtitle("Epithelial - GDF15")
+p2 <- plotGene("Nanostring", "Fibroblasts", "celltype_pred", "PDGFRA") + ggtitle("Fibroblast - PDGFRA")
+p3 <- plotGene("Nanostring", "Macrophage", "celltype_pred", "CD14") + ggtitle("Macrophage - CD14")
+p4 <- plotGene("Nanostring", "Smooth_muscle_cells", "celltype_pred", "ACTA2") + ggtitle("Muscle - ACTA2")
+p5 <- plotGene("Nanostring", "Endothelial_cells", "celltype_pred", "PECAM1") + ggtitle("Endothelial - PECAM1")
+p6 <- plotGene("Nanostring", "T_cells", "celltype_pred", "CD3E") + ggtitle("T cell - CD3E")
+```
+
+```{r}
+p <- cowplot::plot_grid(p1, p2, p3, p4, p5, p6, ncol=2, align='vh')
+cowplot::save_plot(p, filename='./lung_celltype_markers.pdf',
+                   base_width=5.75, base_height=5)
+```
+
+
+
+
+
+
+
