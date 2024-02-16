@@ -1,6 +1,7 @@
 library(Seurat)
 library(dplyr)
 library(ggplot2)
+library(shadowtext)
 library(scales)
 library(cowplot)
 library(data.table)
@@ -135,8 +136,16 @@ readTxMeta <- function(path, platform){
 #######
 
 ### Transcripts per cell
-getTxPerCell <- function(seu_obj){
-  mean_tx <- mean(seu_obj$transcript_counts)
+
+getTxPerCell <- function(seu_obj, #features can be explicitly defined. Defaults to all targets
+                         features=NULL){ 
+  if(is.null(features)){
+    features <- rownames(seu_obj)
+  } else{
+    features <- features
+  }
+  
+  mean_tx <- mean(colSums(seu_obj[["RNA"]]$counts[features,]))
   
   res <- data.frame(
     sample_id = unique(seu_obj$sample_id),
@@ -144,22 +153,37 @@ getTxPerCell <- function(seu_obj){
     value=mean_tx
   )
   return(res)
-}
+} 
 
 ### Transcripts per um2
-getTxPerArea <- function(seu_obj){
-  mean_tx <- mean(seu_obj$transcript_counts / seu_obj$cell_area)
+getTxPerArea <- function(seu_obj, 
+                         features=NULL){ 
+  if(is.null(features)){
+    features <- rownames(seu_obj)
+  } else{
+    features <- features
+  }
+  
+  tx_count <- colSums(seu_obj[["RNA"]]$counts[features,])
+  mean_tx_norm <- mean(tx_count / seu_obj$cell_area)
   
   res <- data.frame(
     sample_id = unique(seu_obj$sample_id),
     platform = unique(seu_obj$platform),
-    value=mean_tx
+    value=mean_tx_norm
   )
   return(res)
 }
 
 ### Transcripts per nucleus
-getTxPerNuc <- function(seu_obj){
+getTxPerNuc <- function(seu_obj, 
+                        features=NULL){
+  if(is.null(features)){
+    features <- rownames(seu_obj)
+  } else{
+    features <- features
+  }
+  
   path <- unique(seu_obj$path)
   platform <- unique(seu_obj$platform)
   
@@ -168,7 +192,8 @@ getTxPerNuc <- function(seu_obj){
   
   if(platform == "Xenium"){
     tx_df <- filter(tx_df, cell_id %in% colnames(seu_obj) & 
-                      overlaps_nucleus == 1) %>%
+                      overlaps_nucleus == 1 &
+                      feature_name %in% features) %>%
       group_by(cell_id) %>%
       summarize(nuc_counts = n())
     
@@ -177,7 +202,56 @@ getTxPerNuc <- function(seu_obj){
     tx_df$cell_id <- paste(tx_df$cell_ID, tx_df$fov, sep="_")
     tx_df <- tx_df %>%
       filter(cell_id %in% colnames(seu_obj) & 
-                      CellComp == "Nuclear") %>%
+               CellComp == "Nuclear" &
+               target %in% features) %>%
+      group_by(cell_id) %>%
+      summarize(nuc_counts = n())
+    
+  } else if(platform == "Merscope"){
+    print("Working on support")
+    
+  } else{
+    print("Platform not supported")
+  }
+  
+  res <- data.frame(
+    sample_id = unique(seu_obj$sample_id),
+    platform = unique(seu_obj$platform),
+    value=mean(tx_df$nuc_counts)
+  )
+  
+  return(res)
+}
+
+### Transcripts per nucleus
+getTxPerNuc <- function(seu_obj, 
+                        features=NULL){
+  if(is.null(features)){
+    features <- rownames(seu_obj)
+  } else{
+    features <- features
+  }
+  
+  path <- unique(seu_obj$path)
+  platform <- unique(seu_obj$platform)
+  
+  # Read Tx localization data
+  tx_df <- readTxMeta(path, platform)
+  
+  if(platform == "Xenium"){
+    tx_df <- filter(tx_df, cell_id %in% colnames(seu_obj) & 
+                      overlaps_nucleus == 1 &
+                      feature_name %in% features) %>%
+      group_by(cell_id) %>%
+      summarize(nuc_counts = n())
+    
+    
+  } else if(platform == "CosMx"){
+    tx_df$cell_id <- paste(tx_df$cell_ID, tx_df$fov, sep="_")
+    tx_df <- tx_df %>%
+      filter(cell_id %in% colnames(seu_obj) & 
+               CellComp == "Nuclear" &
+               target %in% features) %>%
       group_by(cell_id) %>%
       summarize(nuc_counts = n())
     
@@ -198,10 +272,17 @@ getTxPerNuc <- function(seu_obj){
 }
 
 ### Per Probe Mean Expression
-getMeanExpression <- function(seu_obj){
+getMeanExpression <- function(seu_obj, 
+                              features=NULL){
+  if(is.null(features)){
+    features <- rownames(seu_obj)
+  } else{
+    features <- features
+  }
+  
   target_df <- data.frame(
-    target = rownames(seu_obj[["RNA"]]$counts),
-    value = rowMeans(seu_obj[["RNA"]]$counts),
+    target = features,
+    value = rowMeans(seu_obj[["RNA"]]$counts[features,]),
     type = "Gene"
   )
   
@@ -219,8 +300,15 @@ getMeanExpression <- function(seu_obj){
 } 
 
 ### log-ratio of mean gene counts to mean neg probe counts
-getMeanSignalRatio <- function(seu_obj){
-  tx_means <- rowMeans(seu_obj[["RNA"]]$counts)
+getMeanSignalRatio <- function(seu_obj, 
+                               features=NULL){
+  if(is.null(features)){
+    features <- rownames(seu_obj)
+  } else{
+    features <- features
+  }
+  
+  tx_means <- rowMeans(seu_obj[["RNA"]]$counts[features,])
   neg_probe_means <- rowMeans(seu_obj[["ControlProbe"]]$counts)
   
   ratio <- log10(tx_means) - log10(mean(neg_probe_means))
@@ -236,19 +324,28 @@ getMeanSignalRatio <- function(seu_obj){
 }
 
 ### Fraction of transcripts in cells
-getCellTxFraction <- function(seu_obj){
+getCellTxFraction <- function(seu_obj, 
+                              features=NULL){
+  if(is.null(features)){
+    features <- rownames(seu_obj)
+  } else{
+    features <- features
+  }
+  
   path <- unique(seu_obj$path)
   platform <- unique(seu_obj$platform)
   
   tx_df <- readTxMeta(path, platform)
   
   if(platform == "Xenium"){
+    tx_df <- filter(tx_df, feature_name %in% features)
     total_tx_count <- nrow(tx_df)
     unassigned_tx_count <- sum(tx_df$cell_id == "UNASSIGNED")
     
     cell_tx_fraction <- (total_tx_count - unassigned_tx_count) / total_tx_count
     
   } else if(platform == "CosMx"){
+    tx_df <- filter(tx_df, target %in% features)
     total_tx_count <- nrow(tx_df)
     unassigned_tx_count <- sum(tx_df$CellComp == "None")
     
@@ -272,8 +369,15 @@ getCellTxFraction <- function(seu_obj){
 
 ##### Dynamic Range 
 # Log-ratio of highest mean exp vs. mean noise
-getMaxRatio <- function(seu_obj){
-  tx_means <- rowMeans(seu_obj[["RNA"]]$counts)
+getMaxRatio <- function(seu_obj, 
+                        features=NULL){
+  if(is.null(features)){
+    features <- rownames(seu_obj)
+  } else{
+    features <- features
+  }
+  
+  tx_means <- rowMeans(seu_obj[["RNA"]]$counts[features,])
   neg_probe_means <- rowMeans(seu_obj[["ControlProbe"]]$counts)
   
   ratio <- log10(max(tx_means)) - log10(mean(neg_probe_means))
@@ -288,14 +392,21 @@ getMaxRatio <- function(seu_obj){
 }
 
 # Distribution of maximal values
-getMaxDetection <- function(seu_obj){
-  max_vals <- matrixStats::rowMaxs(seu_obj[["RNA"]]$counts)
+getMaxDetection <- function(seu_obj, 
+                            features=NULL){
+  if(is.null(features)){
+    features <- rownames(seu_obj)
+  } else{
+    features <- features
+  }
+  
+  max_vals <- matrixStats::rowMaxs(as.matrix(seu_obj[["RNA"]]$counts[features,]))
   
   res <- data.frame(
     sample_id = unique(seu_obj$sample_id),
     platform = unique(seu_obj$platform),
     value=max_vals,
-    gene = rownames(seu_obj)
+    gene = features
   )
   
   return(res)
@@ -344,19 +455,26 @@ getMECR <- function(seu_obj) {
   res <- data.frame(
     sample_id = unique(seu_obj$sample_id),
     platform = unique(seu_obj$platform),
-    value=mean(coexp.rates)
+    value=round(mean(coexp.rates), digits=3)
   )
   
   return(res)
 }
 
 ##### Distribution spatial autocorrelation
-getMorans <- function(seu_obj){
+getMorans <- function(seu_obj, 
+                      features=NULL){
   #Requires SingleCellExperiment, SpatialFeatureExperiment, Voyager, scater
+  
+  if(is.null(features)){
+    features <- rownames(seu_obj)
+  } else{
+    features <- features
+  }
   
   #First run for gene-targeting probes
   print("Getting Moran's I for gene-targeting probes")
-  sce <- SingleCellExperiment(list(counts=seu_obj[["RNA"]]$counts),
+  sce <- SingleCellExperiment(list(counts=seu_obj[["RNA"]]$counts[features,]),
                               colData = seu_obj@meta.data)
   colData(sce) <- cbind(colData(sce), Embeddings(seu_obj, 'tissue'))
   spe <- toSpatialExperiment(sce, spatialCoordsNames = c("Tissue_1",
@@ -438,17 +556,17 @@ getSilhouetteWidth <- function(seu_obj){
     clusters = seu_obj$seurat_clusters
   )
   
-  silhouette <- as.data.frame(silhouette) %>% 
-    group_by(cluster) %>%
-    summarize(mean_width = mean(width))
+  silhouette <- as.data.frame(silhouette)
   
   res <- data.frame(
     sample_id = unique(seu_obj$sample_id),
     platform = unique(seu_obj$platform),
-    value=mean(silhouette$mean_width)
+    value=round(mean(silhouette$width), digits=3)
   )
   
 }
+
+
 
 #######
 # Plotting
@@ -458,61 +576,29 @@ getSilhouetteWidth <- function(seu_obj){
 # 2) platform
 # 3) value (based on what is being plotted--from functions above)
 
-plotPanelSize <- function(df){
-  p <- ggplot(df, aes(x=value, y=sample_id)) +
-    geom_col(color='black', aes(fill=platform)) +
-    geom_text(aes(label=value),
-              hjust = 1, nudge_x = -.5) +
-    xlab("Probe set size") + ylab("") +
-    scale_fill_manual(values = c("#59C134", "#14B3E6")) + 
-    scale_x_continuous(position='top',
-                       expand = c(0,0),
-                       labels = label_comma(),
-                       breaks=c(0, 500, 1000)) +
-    theme_classic() +
-    theme(
-      legend.position='none',
-      axis.text.y = element_text(size=14, color='black'),
-      axis.text.x = element_text(size=10, color="black"),
-      axis.title.x = element_text(size=12),
-      axis.line.y = element_blank(),
-      axis.ticks.y = element_blank()
-    )
+plotSampleLabel <- function(sample_meta){
+  df <- data.frame(
+    samples = sample_meta$sample_id,
+    platform = sample_meta$platform
+  )
   
+  p <- ggplot(df, aes(x="", y=samples)) +
+    geom_text(aes(label=samples, color=platform), size=5, hjust=0.5) +
+    scale_color_manual(values = c("#59C134", "#14B3E6")) + 
+    theme_void() + theme(legend.position='none')
   return(p)
-  
 }
 
-plotCellCount <- function(df){
-  p <- ggplot(df, aes(x=value, y=sample_id)) +
-    geom_col(color='black', fill='grey80') +
-    geom_text(aes(label=scales::comma(value)),
-              hjust = 1, nudge_x = -.5) +
-    xlab("Cell count") + ylab("") +
-    scale_x_continuous(position='top',
-                       expand = c(0,0),
-                       labels = label_comma(),
-                       breaks=c(0, 200000, 400000)) +
-    theme_classic() +
-    theme(
-      axis.text.y = element_blank(),
-      axis.text.x = element_text(size=10, color="black"),
-      axis.title.x = element_text(size=12),
-      axis.line.y = element_blank(),
-      axis.ticks.y = element_blank()
-    )
-  
-    return(p)
-}
-
-plotTxPerCell <- function(df){
-  df$column <- ""
-  p <- ggplot(df, aes(x=column, y=sample_id)) +
-    geom_point(shape=21, color='black', fill='grey80', alpha=0.8,
-               aes(size=value)) +
-    geom_text(aes(label=scales::comma(value))) +
-    xlab("Tx/cell") + ylab("") +
-    scale_size(range = c(7,10)) +
+plotPanelSize <- function(df){
+  p <- ggplot(df, aes(x="", y=sample_id)) +
+    geom_point(shape=21, color='black', alpha=0.8, stroke=1,
+               aes(size=value, fill=value)) +
+    geom_shadowtext(color = "black", size = 4, #fontface = "bold", 
+                    bg.colour = "white", bg.r = .2,
+                    aes(label=scales::comma(value))) +
+    scale_fill_gradientn(colours=viridis::mako(100)) +
+    xlab("Panel size") + ylab("") +
+    scale_size(range = c(6,12)) +
     scale_x_discrete(position='top',
                      labels = c("")) +
     theme_classic() +
@@ -526,23 +612,69 @@ plotTxPerCell <- function(df){
     )
   
   return(p)
+  
+}
+
+plotCellCount <- function(df){
+  p <- ggplot(df, aes(x="", y=sample_id)) +
+    geom_text(aes(label=scales::comma(value), color=platform), size=5, hjust=0.5) +
+    scale_color_manual(values = c("#59C134", "#14B3E6")) + 
+    scale_x_discrete(position='top') +
+    xlab("Cell count") + ylab("") +
+    theme_classic() + 
+    theme(
+      legend.position='none',
+      axis.text.y = element_blank(),
+      axis.text.x = element_text(size=10, color="black"),
+      axis.title.x = element_text(size=12),
+      axis.line.y = element_blank(),
+      axis.ticks.y = element_blank()
+    )
+  return(p)
+}
+
+plotTxPerCell <- function(df){
+  p <- ggplot(df, aes(x="", y=sample_id)) +
+    geom_point(shape=21, color='black', alpha=0.8, stroke=1,
+               aes(size=value, fill=value)) +
+    geom_shadowtext(color = "black", size = 4, #fontface = "bold", 
+                    bg.colour = "white", bg.r = .2,
+                    aes(label=scales::comma(value))) +
+    scale_fill_gradientn(colours=viridis::mako(100)) +
+    xlab("Per cell") + ylab("") +
+    scale_size(range = c(7,12)) +
+    scale_x_discrete(position='top',
+                     labels = c("")) +
+    theme_classic() +
+    theme(
+      legend.position='none',
+      axis.text.y = element_blank(),
+      axis.text.x = element_blank(),
+      axis.title.x = element_text(size=10),
+      axis.line.y = element_blank(),
+      axis.ticks.y = element_blank()
+    )
+  
+  return(p)
 }
 
 plotTxPerArea <- function(df){
-  df$column <- ""
-  p <- ggplot(df, aes(x=column, y=sample_id)) +
-    geom_point(shape=21, color='black', fill='grey80', alpha=0.8,
-               aes(size=value)) +
-    geom_text(aes(label=scales::comma(value))) +
-    xlab("Tx/cell\narea (um^2)") + ylab("") +
-    scale_size(range = c(7,10)) +
+  p <- ggplot(df, aes(x="", y=sample_id)) +
+    geom_point(shape=21, color='black', alpha=0.8, stroke=1,
+               aes(size=value, fill=value)) +
+    geom_shadowtext(color = "black", size = 4, #fontface = "bold", 
+                    bg.colour = "white", bg.r = .2,
+                    aes(label=scales::comma(value))) +
+    xlab("Per cell\num^2") + ylab("") +
+    scale_fill_gradientn(colours=viridis::mako(100)) +
+    scale_size(range = c(7,12)) +
     scale_x_discrete(position='top') +
     theme_classic() +
     theme(
       legend.position='none',
       axis.text.y = element_blank(),
       axis.text.x = element_blank(),
-      axis.title.x = element_text(size=12),
+      axis.title.x = element_text(size=10),
       axis.line.y = element_blank(),
       axis.ticks.y = element_blank()
     )
@@ -553,18 +685,21 @@ plotTxPerArea <- function(df){
 plotTxPerNuc <- function(df){
   df$column <- ""
   p <- ggplot(df, aes(x=column, y=sample_id)) +
-    geom_point(shape=21, color='black', fill='grey80', alpha=0.8,
-               aes(size=value)) +
-    geom_text(aes(label=scales::comma(value))) +
-    xlab("Tx/nucleus") + ylab("") +
-    scale_size(range = c(7,10)) +
+    geom_point(shape=21, color='black', alpha=0.8, stroke=1,
+               aes(size=value, fill=value)) +
+    geom_shadowtext(color = "black", size = 4, #fontface = "bold", 
+                    bg.colour = "white", bg.r = .2,
+                    aes(label=scales::comma(value))) +
+    xlab("Per\nnucleus") + ylab("") +
+    scale_fill_gradientn(colours=viridis::mako(100)) +
+    scale_size(range = c(7,12)) +
     scale_x_discrete(position='top') +
     theme_classic() +
     theme(
       legend.position='none',
       axis.text.y = element_blank(),
       axis.text.x = element_blank(),
-      axis.title.x = element_text(size=12),
+      axis.title.x = element_text(size=10),
       axis.line.y = element_blank(),
       axis.ticks.y = element_blank()
     )
@@ -573,20 +708,22 @@ plotTxPerNuc <- function(df){
 }
 
 plotTxPerCellNorm <- function(df){
-  df$column <- ""
-  p <- ggplot(df, aes(x=column, y=sample_id)) +
-    geom_point(shape=21, color='black', fill='grey80', alpha=0.8,
-               aes(size=value)) +
-    geom_text(aes(label=scales::comma(value))) +
-    xlab("Tx/cell\nper gene") + ylab("") +
-    scale_size(range = c(7,10)) +
+  p <- ggplot(df, aes(x="", y=sample_id)) +
+    geom_point(shape=21, color='black', alpha=0.8, stroke=1,
+               aes(size=value, fill=value)) +
+    geom_shadowtext(color = "black", size = 4, #fontface = "bold", 
+                    bg.colour = "white", bg.r = .2,
+                    aes(label=scales::comma(value))) +
+    xlab("Per cell\nper target") + ylab("") +
+    scale_fill_gradientn(colours=viridis::mako(100)) +
+    scale_size(range = c(7,12)) +
     scale_x_discrete(position='top') +
     theme_classic() +
     theme(
       legend.position='none',
       axis.text.y = element_blank(),
       axis.text.x = element_blank(),
-      axis.title.x = element_text(size=12),
+      axis.title.x = element_text(size=10),
       axis.line.y = element_blank(),
       axis.ticks.y = element_blank()
     )
@@ -594,15 +731,18 @@ plotTxPerCellNorm <- function(df){
   return(p)
 }
 
+plotTxPerCellIntersect <- 
+
 plotFractionTxInCell <- function(df){
   p <- ggplot(df, aes(x=value, y=sample_id)) +
-    geom_col(color='black', fill='grey80') +
+    geom_col(color='black', fill='grey90', stroke=1) +
     geom_text(aes(label=scales::comma(value)),
               hjust = 1, nudge_x = -.05) +
     xlab("Fraction Tx in Cells") + ylab("") +
     scale_x_continuous(position='top',
                        expand = c(0,0),
                        breaks=c(0, 0.5, 1),
+                       labels = c(0, 0.5, 1),
                        limits=c(0,1)) +
     theme_classic() +
     theme(
@@ -616,9 +756,11 @@ plotFractionTxInCell <- function(df){
   return(p)
 }
 
+plotTxPerCell_Intersect <- function()
+
 plotSignalRatio <- function(df){
   p <- ggplot(df, aes(x=value, y=sample_id)) +
-    geom_col(color='black', fill='grey80') +
+    geom_col(color='black', fill='grey90') +
     geom_text(aes(label=scales::comma(value)),
               hjust = 1, nudge_x = -.05) +
     xlab("Mean log10-ratio\nexpression over noise") + ylab("") +
@@ -661,19 +803,45 @@ plotMeanExpression <- function(df){
   return(p)
 }
 
-plotMECR <- function(df){
+plotMaxExpression <- function(df){
   p <- ggplot(df, aes(x=value, y=sample_id)) +
-    geom_col(color='black', fill='grey80') +
-    geom_text(aes(label=scales::comma(value)),
-              hjust = 1) +
-    xlab("MECR") + ylab("") +
-    scale_x_continuous(position='top',
-                       expand = c(0,0)) +
+    geom_jitter(size=0.15, shape=16, aes(color=platform)) +
+    geom_boxplot(color="black", fill="lightgrey",
+                 alpha=0.5, outlier.size=0, outlier.colour = NA) +
+    scale_colour_manual(values = c("#59C134", "#14B3E6")) +
+    xlab("Maximal gene\ndetection per cell") + ylab("") +
+    scale_x_continuous(position='top', expand = c(0,0),
+                  limits = c(0,50), oob=squish) +
     theme_classic() +
     theme(
+      legend.position='none',
       axis.text.y = element_blank(),
       axis.text.x = element_text(size=10, color="black"),
       axis.title.x = element_text(size=12),
+      axis.line.y = element_blank(),
+      axis.ticks.y = element_blank()
+    )
+}
+
+plotMECR <- function(df){
+  p <- ggplot(df, aes(x="", y=sample_id)) +
+    geom_point(shape=21, color='black', alpha=0.8, stroke=1,
+               aes(size=value, fill=value)) +
+    geom_shadowtext(color = "black", size = 4, #fontface = "bold", 
+                    bg.colour = "white", bg.r = .2,
+                    aes(label=scales::comma(value))) +
+    scale_fill_gradientn(colours=RColorBrewer::brewer.pal(9, "YlOrRd"),
+                         limits=c(0.01)) +
+    xlab("MECR") + ylab("") +
+    scale_size(range = c(7,12), limits = c(0, 0.1)) +
+    scale_x_discrete(position='top',
+                     labels = c("")) +
+    theme_classic() +
+    theme(
+      legend.position='none',
+      axis.text.y = element_blank(),
+      axis.text.x = element_blank(),
+      axis.title.x = element_text(size=10),
       axis.line.y = element_blank(),
       axis.ticks.y = element_blank()
     )
@@ -707,10 +875,10 @@ plotMorans <- function(df){
 
 plotSilhouette <- function(df){
   p <- ggplot(df, aes(x=value, y=sample_id)) +
-    geom_col(color='black', fill='grey80') +
+    geom_col(color='black', fill='grey90') +
     geom_text(aes(label=scales::comma(value)),
-              hjust = 1, nudge_x = -0.01) +
-    xlab("Mean cluster silhouette\nwidth (Louvain res=0.2)") + ylab("") +
+              hjust = 1, nudge_x = -0.001) +
+    xlab("Mean\nsilhouette width\n(Louvain res=0.2)") + ylab("") +
     scale_x_continuous(position='top',
                        expand = c(0,0)) +
     theme_classic() +
@@ -731,21 +899,23 @@ plotSilhouette <- function(df){
 #######
 
 # Set up metadata table for samples
-#sample_meta <- data.frame(
-#  sample_id = c("Xen_BCa_4066", "CosMx_BCa_4066"),
-#  path = c(
-#    "/Volumes/Charmander/spatial_data/new_data/Xenium_Breast_4066_Run1/",
-#    "/Volumes/Charmander/spatial_data/new_data/CosMx_Breast_4066_Run1/"
-#  ),
-#  platform = c("Xenium", "CosMx")
-#)
-
-path <- "/Volumes/Charmander/spatial_data/new_data/"
+# Two samples for testing
 sample_meta <- data.frame(
-  sample_id = list.files(path),
-  path = paste0(path, list.files(path)),
-  platform = stringr::word(list.files(path), 1, 1, sep="_")
+  sample_id = c("Xen_BCa_4066", "CosMx_BCa_4066"),
+  path = c(
+    "/Volumes/Charmander/spatial_data/new_data/Xenium_Breast_4066_Run1/",
+    "/Volumes/Charmander/spatial_data/new_data/CosMx_Breast_4066_Run1/"
+  ),
+  platform = c("Xenium", "CosMx")
 )
+
+# Full directory of samples
+#path <- "/Volumes/Charmander/spatial_data/new_data/"
+#sample_meta <- data.frame(
+#  sample_id = list.files(path),
+#  path = paste0(path, list.files(path)),
+#  platform = stringr::word(list.files(path), 1, 1, sep="_")
+#)
 
 # Load objects from table
 obj_list <- list()
@@ -778,9 +948,14 @@ tx_per_um2 <- do.call(rbind, lapply(obj_list, getTxPerArea))
 # Transcripts per nucleus
 tx_per_nuc <- do.call(rbind, lapply(obj_list, getTxPerNuc))
 
-# Transcript per cell (normalized by probe set size)
+# Transcript per cell per 100 genes in panel
 tx_per_cell_norm <- tx_per_cell
-tx_per_cell_norm$value <- tx_per_cell_norm$value / panel_size$value
+tx_per_cell_norm$value <- round(tx_per_cell_norm$value / panel_size$value,
+                                digits = 2)
+
+# Transcripts per cell with intesecting genes
+common_genes <- Reduce(intersect, lapply(obj_list, rownames))
+tx_per_cell_intersect <- do.call(rbind, lapply(obj_list, getTxPerCell, features=common_genes))
 
 # Fraction transcripts in cells
 tx_fraction_in_cell <- do.call(rbind, lapply(obj_list, getCellTxFraction))
@@ -790,6 +965,9 @@ signal_ratio <- do.call(rbind, lapply(obj_list, getMeanSignalRatio))
 
 # Expression
 mean_expression <- do.call(rbind, lapply(obj_list, getMeanExpression))
+
+# Max expression distribution
+max_exp <- do.call(rbind, lapply(obj_list, getMaxDetection))
 
 # MECR
 mecr <- do.call(rbind, lapply(obj_list, getMECR))
@@ -801,12 +979,14 @@ morans <- do.call(rbind, lapply(obj_list, getMorans))
 silhouette <- do.call(rbind, lapply(obj_list, getSilhouetteWidth))
 
 # PLOT
+p0 <- plotSampleLabel(sample_meta)
 p1 <- plotPanelSize(panel_size)
 p2 <- plotCellCount(cell_count)
 p3 <- plotTxPerCell(tx_per_cell)
 p4 <- plotTxPerArea(tx_per_um2) 
 p5 <- plotTxPerNuc(tx_per_nuc)
 p6 <- plotTxPerCellNorm(tx_per_cell_norm) 
+p65 <- plotTxPerCell(tx_per_cell_intersect) + xlab("Per cell\ncommon\ngenes")
 p7 <- plotFractionTxInCell(tx_fraction_in_cell)
 p8 <- plotSignalRatio(signal_ratio) 
 p9 <- plotMeanExpression(mean_expression)
@@ -814,8 +994,8 @@ p10 <- plotMECR(mecr)
 p11 <- plotMorans(morans)
 p12 <- plotSilhouette(silhouette)
 
-p <- cowplot::plot_grid(p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12,
-                        ncol=12, align='h',
-                        rel_widths = c(1.6, 1, 0.5, 0.5, 0.5, 0.5, 1, 1, 1, 1, 1, 1))
-cowplot::save_plot(p, filename="~/Downloads/benchmark_qc.pdf",
-                   base_width=20, base_height=20)
+p <- cowplot::plot_grid(p0, p1, p2, p3, p4, p5, p6, p65, p7, p8, p9, p10, p11, p12,
+                        ncol=14, align='h',
+                        rel_widths = c(0.75, 0.4, 0.5, 0.3, 0.3, 0.3, 0.3, 0.3, 0.75, 0.75, 0.8, 0.3, 0.8, 0.8))
+cowplot::save_plot(p, filename="~/Downloads/benchmark_qc_small.pdf",
+                   base_width=20, base_height=1.8)
